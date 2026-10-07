@@ -1,0 +1,5 @@
+Flask
+torch
+transformers
+accelerate
+edge-tts

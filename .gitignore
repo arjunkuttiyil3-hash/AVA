@@ -1,0 +1,19 @@
+﻿venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+.vscode/
+node_modules/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# AI model files
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf

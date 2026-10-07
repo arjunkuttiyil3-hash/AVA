@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>Create Event - AVA</title>
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='css/style.css') }}">
+
+</head>
+
+<body>
+
+    <div class="container">
+
+        <h1>Create Event</h1>
+
+        <form method="POST">
+
+            <div>
+                <label>Event Name</label>
+                <br>
+                <input
+                    type="text"
+                    name="event_name"
+                    placeholder="Example: IGNIZ 2026"
+                    required
+                >
+            </div>
+
+            <br>
+
+            <div>
+                <label>Venue</label>
+                <br>
+                <input
+                    type="text"
+                    name="venue"
+                    placeholder="Example: Main Auditorium"
+                >
+            </div>
+
+            <br>
+
+            <div>
+                <label>Event Date</label>
+                <br>
+                <input
+                    type="date"
+                    name="event_date"
+                    required
+                >
+            </div>
+
+            <br>
+
+            <button type="submit">
+                Create Event
+            </button>
+
+        </form>
+
+    </div>
+
+</body>
+
+</html>

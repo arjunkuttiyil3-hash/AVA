@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>{{ event['name'] }} - AVA</title>
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='css/style.css') }}">
+
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>{{ event['name'] }}</h1>
+
+    <h2>Event Dashboard</h2>
+
+    <p>
+        <strong>Venue:</strong>
+        {{ event['venue'] }}
+    </p>
+
+    <p>
+        <strong>Date:</strong>
+        {{ event['event_date'] }}
+    </p>
+
+    <hr>
+
+    <h2>Event Schedule</h2>
+
+    {% if schedule %}
+
+        {% for item in schedule %}
+
+            <div class="schedule-item">
+
+                <strong>{{ item['event_time'] }}</strong>
+
+                &nbsp; | &nbsp;
+
+                {{ item['title'] }}
+
+                {% if item['participant'] %}
+                    — {{ item['participant'] }}
+                {% endif %}
+
+                <small>
+                    ({{ item['event_type'] }})
+                </small>
+
+            </div>
+
+        {% endfor %}
+
+    {% else %}
+
+        <p>No schedule items added yet.</p>
+
+    {% endif %}
+
+    <hr>
+
+    <h2>Add Schedule Item</h2>
+
+    <form
+        method="POST"
+        action="{{ url_for('add_schedule', event_id=event['id']) }}"
+    >
+
+        <div>
+            <label>Time</label>
+            <br>
+
+            <input
+                type="time"
+                name="event_time"
+                required
+            >
+        </div>
+
+        <br>
+
+        <div>
+            <label>Event Title</label>
+            <br>
+
+            <input
+                type="text"
+                name="title"
+                placeholder="Example: Dance Performance"
+                required
+            >
+        </div>
+
+        <br>
+
+        <div>
+            <label>Event Type</label>
+            <br>
+
+            <select name="event_type">
+
+                <option value="opening">
+                    Opening
+                </option>
+
+                <option value="speech">
+                    Speech
+                </option>
+
+                <option value="performance">
+                    Performance
+                </option>
+
+                <option value="prayer">
+                    Prayer
+                </option>
+
+                <option value="announcement">
+                    Announcement
+                </option>
+
+                <option value="other">
+                    Other
+                </option>
+
+            </select>
+
+        </div>
+
+        <br>
+
+        <div>
+
+            <label>Participant / Speaker</label>
+            <br>
+
+            <input
+                type="text"
+                name="participant"
+                placeholder="Example: Kalaa"
+            >
+
+        </div>
+
+        <br>
+
+        <button type="submit">
+            Add to Schedule
+        </button>
+
+    </form>
+<hr>
+
+<a href="{{ url_for('live_event', event_id=event['id']) }}">
+
+    <button>
+        🎙️ Start AVA Live
+    </button>
+
+</a>
+
+</div>
+
+</body>
+
+</html>

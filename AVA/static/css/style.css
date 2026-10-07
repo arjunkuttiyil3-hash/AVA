@@ -1,0 +1,51 @@
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #f5f5f5;
+}
+
+.container {
+    text-align: center;
+    padding-top: 150px;
+}
+
+h1 {
+    font-size: 70px;
+    margin-bottom: 5px;
+}
+
+h2 {
+    font-size: 28px;
+}
+
+p {
+    font-size: 18px;
+}
+
+button {
+    padding: 12px 30px;
+    font-size: 16px;
+    cursor: pointer;
+}
+.schedule-item {
+    background: white;
+    padding: 15px;
+    margin: 10px auto;
+    max-width: 600px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+}
+
+input,
+select {
+    padding: 10px;
+    width: 300px;
+    max-width: 90%;
+    font-size: 16px;
+}
+
+button {
+    padding: 12px 25px;
+    font-size: 16px;
+    cursor: pointer;
+}
