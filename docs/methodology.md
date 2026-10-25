@@ -11,8 +11,9 @@ existing VRE research platform.
    intent rules avoid an LLM call for common requests.
 3. **Task identification and service selection:** map the intent, language, and
    mode to an entry in `config/ava.yaml`.
-4. **Processing:** stream the configured Ollama model; retry with bounded
-   exponential backoff. An optional Gemini backend may be configured; template
+4. **Processing:** stream the configured Gemini model with bounded retries and
+   exponential backoff. A separately configured Gemini fallback model is tried
+   after primary-model not-found, rate-limit, or timeout failures; template
    responses are the final fallback.
 5. **Validation:** reject unsafe, empty, excessive, repetitive, or mismatched
    script output. One corrective generation is attempted before a concise

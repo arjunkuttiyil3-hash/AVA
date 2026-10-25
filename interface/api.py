@@ -33,11 +33,14 @@ from orchestrator.router import ModelRouter
 from services.event_service import (
     EventNotFoundError,
     EventService,
+    blocked_names,
     contains_blocked_name,
+    drop_blocked_name_sentences,
     parse_operator_command,
 )
 from modules.speaker_capture import SpeakerCapture
 from modules.summarizer import SpeakerSummarizer
+from llm import health_check as gemini_health_check
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("ava")
@@ -158,7 +161,7 @@ async def lifespan(application: FastAPI):
     )
     logger.info("AVA initialized")
     application.state.health = await asyncio.to_thread(collect_health, settings)
-    application.state.health_checked_at = time.monotonic()
+    application.state.health_checked_at = 0.0
     await asyncio.to_thread(log_health, application.state.health)
     yield
 
@@ -218,12 +221,35 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @application.get("/api/health")
     async def health(refresh: bool = False) -> dict[str, Any]:
-        """Report API liveness plus optional model, audio, and database status."""
-        is_stale = time.monotonic() - application.state.health_checked_at > 30
+        """Report live Gemini generation, speech synthesis, and runtime status."""
+        is_stale = time.monotonic() - application.state.health_checked_at > 300
         if refresh or is_stale:
             checks = await asyncio.to_thread(
                 collect_health, application.state.settings
             )
+            checks["gemini"] = await gemini_health_check()
+            try:
+                audio_path = await application.state.pipeline.synthesizer.synthesize(
+                    "AVA speech system health check.",
+                    "en",
+                    cache_version=f"health-{time.time_ns()}",
+                )
+                tts_message = (
+                    application.state.pipeline.synthesizer.get_status(audio_path)
+                    or "Speech synthesis succeeded."
+                )
+                tts_available = audio_path.is_file()
+                audio_path.unlink(missing_ok=True)
+                checks["tts"] = {
+                    "available": tts_available,
+                    "message": tts_message,
+                }
+            except Exception as exc:
+                logger.exception("TTS health check failed")
+                checks["tts"] = {
+                    "available": False,
+                    "message": f"Speech synthesis failed ({type(exc).__name__}).",
+                }
             application.state.health = checks
             application.state.health_checked_at = time.monotonic()
         else:
@@ -360,6 +386,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     await outgoing.put(
                         {"type": "pong", "time": payload.get("time")}
                     )
+                    continue
+                if payload.get("type") == "stop":
+                    pipeline.stop_speaking(session_id)
+                    await outgoing.put({"type": "speech_stop"})
                     continue
                 if payload.get("type") in {"subscribe_event", "event_command"}:
                     continue
@@ -663,6 +693,187 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             lambda: application.state.event_service.advance(event_id, item_id=item_id),
             action="jump",
         )
+
+    @application.post("/api/live-events/{event_id}/call-now")
+    async def call_live_item(
+        event_id: int, payload: dict[str, Any] = Body(default_factory=dict)
+    ) -> dict[str, Any]:
+        """Select the next or requested live item, generate an intro, and speak it."""
+        event_service: EventService = application.state.event_service
+        try:
+            before = await asyncio.to_thread(event_service.get_event, event_id)
+        except EventNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        item_id = payload.get("item_id")
+        if item_id is not None and (
+            isinstance(item_id, bool) or not isinstance(item_id, int)
+        ):
+            raise HTTPException(status_code=422, detail="item_id must be an integer.")
+        include_summary = bool(payload.get("include_summary", True))
+        previous_item = next(
+            (item for item in before["items"] if item["id"] == before["current_item_id"]),
+            None,
+        )
+        updated = await mutate_live_event(
+            event_id,
+            lambda: event_service.advance(event_id, item_id=item_id),
+            action="call_now" if item_id is not None else "next",
+        )
+        current_item = next(
+            (item for item in updated["items"] if item["id"] == updated["current_item_id"]),
+            None,
+        )
+        if (
+            item_id is None
+            and before["current_item_id"] is not None
+            and updated["current_item_id"] == before["current_item_id"]
+        ):
+            raise HTTPException(status_code=409, detail="There is no next schedule item.")
+        if current_item is None:
+            raise HTTPException(
+                status_code=409, detail="There is no eligible schedule item to announce."
+            )
+        if previous_item and previous_item["id"] == current_item["id"]:
+            previous_item = None
+        if previous_item and previous_item["status"] in {"absent", "removed", "skipped"}:
+            previous_item = None
+        if previous_item and contains_blocked_name(
+            str(previous_item.get("person_name") or ""),
+            blocked_names(updated),
+        ):
+            previous_item = None
+
+        fallback = event_service.build_call_now_template(
+            updated,
+            previous_item,
+            current_item,
+            include_summary=include_summary,
+        )
+        eligible_schedule = [
+            {
+                "title": item["title"],
+                "type": item["type"],
+                "person_name": item["person_name"],
+                "designation": item["designation"],
+                "status": item["status"],
+            }
+            for item in updated["items"]
+            if item["status"] in {"pending", "arrived", "on_stage", "done"}
+        ]
+        response_language = (
+            "natural spoken Malayalam in Malayalam script"
+            if updated["language"] == "ml"
+            else "natural spoken English"
+        )
+        previous_prompt_item = (
+            {
+                "type": previous_item["type"],
+                "person_name": previous_item["person_name"],
+                "summary": previous_item["summary"] if include_summary else "",
+            }
+            if previous_item
+            else None
+        )
+        prompt = (
+            "Write one concise spoken event transition. Thank the previous speaker by name "
+            "when the previous item is a speech. Use only the supplied live schedule and "
+            "summary; do not invent names, topics, or facts. Introduce the current item and "
+            "its person/designation if present. Never mention anyone absent, removed, or skipped. "
+            f"Write in {response_language}.\n"
+            f"Event: {updated['name']}\n"
+            f"Previous speaker and summary: {previous_prompt_item or 'None'}\n"
+            f"Current item: {current_item}\n"
+            f"Eligible live schedule: {eligible_schedule}"
+        )
+
+        def generate_announcement() -> tuple[str, str, str]:
+            chunks, decision = application.state.pipeline.router.stream(
+                "anchoring_script",
+                updated["language"],
+                [{"role": "user", "content": prompt}],
+            )
+            return "".join(chunks).strip(), decision.backend, decision.model
+
+        try:
+            generated, backend, model = await asyncio.to_thread(generate_announcement)
+            forbidden = [
+                item["person_name"]
+                for item in updated["items"]
+                if item["status"] in {"absent", "removed", "skipped"} and item["person_name"]
+            ]
+            generated = drop_blocked_name_sentences(generated, forbidden)
+            previous_speaker = (
+                str(previous_item.get("person_name") or "").strip().casefold()
+                if previous_item and previous_item.get("type") == "speech"
+                else ""
+            )
+            thanks_marker = "നന്ദി" if updated["language"] == "ml" else "thank you"
+            thanks_missing = bool(
+                previous_item
+                and previous_item.get("type") == "speech"
+                and (
+                    thanks_marker not in generated.casefold()
+                    or (
+                        previous_speaker
+                        and previous_speaker not in generated.casefold()
+                    )
+                )
+            )
+            if (
+                backend == "template"
+                or not generated
+                or contains_blocked_name(generated, forbidden)
+                or thanks_missing
+            ):
+                message = fallback
+                used_fallback = True
+            else:
+                message = generated
+                used_fallback = False
+        except Exception:
+            logger.exception(
+                "Live event announcement generation failed; using schedule template"
+            )
+            message = fallback
+            backend = "template"
+            model = "template"
+            used_fallback = True
+
+        preferences = await asyncio.to_thread(
+            application.state.pipeline.repository.get_preferences,
+            updated["session_id"],
+        )
+        audio_url: str | None = None
+        notice: str | None = None
+        try:
+            audio = await application.state.pipeline.synthesizer.synthesize(
+                message,
+                updated["language"],
+                voice=preferences.get("voice") or None,
+                cache_version=updated["state_version"],
+            )
+            audio_url = f"/api/audio/{audio.name}"
+            notice = application.state.pipeline.synthesizer.get_status(audio)
+        except Exception:
+            logger.exception("Announcement TTS failed; browser speech fallback will be used")
+            notice = "Audio synthesis failed; using browser speech if available."
+        robot_results = await asyncio.gather(
+            application.state.pipeline.robot.speak(message),
+            application.state.pipeline.robot.gesture("announcement"),
+            return_exceptions=True,
+        )
+        if any(isinstance(result, Exception) for result in robot_results):
+            logger.warning("Robot could not perform the call-now announcement")
+        return {
+            "event": updated,
+            "text": message,
+            "audio_url": audio_url,
+            "notice": notice,
+            "backend": backend,
+            "model": model,
+            "used_fallback": used_fallback,
+        }
 
     @application.get("/api/live-events/{event_id}/replan")
     async def replan_live_event(event_id: int) -> dict[str, str]:
@@ -983,8 +1194,12 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             item["person_name"] for item in event["items"]
             if item["status"] in {"absent", "removed", "skipped"} and item["person_name"]
         ]
-        if contains_blocked_name(message, forbidden):
-            raise HTTPException(status_code=422, detail="Announcement includes a person marked absent or removed.")
+        message = drop_blocked_name_sentences(message, forbidden)
+        if not message:
+            raise HTTPException(
+                status_code=422,
+                detail="Announcement contains no speakable sentences after excluding absent or removed people.",
+            )
         preferences = await asyncio.to_thread(
             application.state.pipeline.repository.get_preferences,
             event["session_id"],
@@ -1101,7 +1316,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         """Return editable, non-secret UI settings."""
         config = application.state.settings
         return {
-            "model": config.llm.get("default_model", "gemini-2.5-flash"),
+            "model": config.llm.get("default_model", "gemini-3.5-flash"),
             "voices": config.speech.get("voices", {}),
             "language": config.speech.get("language", "en"),
             "speaker_silence_suggestion_seconds": int(

@@ -73,7 +73,11 @@ def load_settings(config_path: str | Path | None = None) -> AppSettings:
             **raw.get("llm", {}),
             "default_model": _environment_value(
                 "GEMINI_MODEL",
-                str(raw.get("llm", {}).get("default_model", "gemini-2.5-flash")),
+                str(raw.get("llm", {}).get("default_model", "gemini-3.5-flash")),
+            ),
+            "fallback_model": _environment_value(
+                "GEMINI_FALLBACK_MODEL",
+                str(raw.get("llm", {}).get("fallback_model", "")),
             ),
         },
         speech=raw.get("speech", {}),

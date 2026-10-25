@@ -32,6 +32,7 @@
   let mediaStream = null;
   let activeAudio = null;
   let finishActiveAudio = null;
+  let activeUtterance = null;
   let audioPlayback = Promise.resolve();
   let audioGeneration = 0;
   let continuous = false;
@@ -41,6 +42,20 @@
   let studioGenerationTarget = null;
   let nextSectionId = 1;
   let connectionState = "connecting";
+  const languageVoices = { en: "en-IN-NeerjaNeural", ml: "ml-IN-SobhanaNeural" };
+
+  function syncLanguageToggle(language) {
+    const selectedLanguage = language === "ml" ? "ml" : "en";
+    $("#language-select").value = selectedLanguage;
+    $("#language-en").setAttribute("aria-pressed", String(selectedLanguage === "en"));
+    $("#language-ml").setAttribute("aria-pressed", String(selectedLanguage === "ml"));
+    document.documentElement.lang = selectedLanguage === "ml" ? "ml" : "en";
+    document.body.classList.toggle("language-ml", selectedLanguage === "ml");
+    const voiceSetting = $("#voice-setting");
+    if (voiceSetting && [...voiceSetting.options].some((option) => option.value === languageVoices[selectedLanguage])) {
+      voiceSetting.value = languageVoices[selectedLanguage];
+    }
+  }
 
   function toast(message) {
     const item = document.createElement("div");
@@ -250,6 +265,7 @@
     $("#typing-indicator").hidden = false;
     assistantText = "";
     pendingAudio = [];
+    playedAudio.clear();
     assistantBubble = bubble("assistant");
     $("#send-button").disabled = true;
   }
@@ -294,6 +310,7 @@
       return;
     }
     if (event.type === "decision") {
+      if (event.language) syncLanguageToggle(event.language);
       $("#think-intent").textContent = event.intent.replaceAll("_", " ");
       $("#think-model").textContent = event.model || "template";
       const snippets = event.retrieved_context || [];
@@ -322,8 +339,16 @@
     }
     if (event.type === "audio") {
       if (studioGenerationTarget) return;
-      pendingAudio.push(event.url);
-      queueAudio(event.url);
+      const source = event.audio_base64
+        ? `data:${event.mime_type || "audio/mpeg"};base64,${event.audio_base64}`
+        : event.url;
+      const audioItem = {
+        source,
+        text: event.text || "",
+        language: event.language || $("#language-select").value,
+      };
+      pendingAudio.push(audioItem);
+      queueAudio(audioItem);
       return;
     }
     if (event.type === "robot") {
@@ -362,6 +387,18 @@
     }
     if (event.type === "audio_unavailable") {
       $("#robot-scene").classList.remove("speaking");
+      if (event.text) {
+        toast("Edge TTS is unavailable; using browser speech.");
+        const audioItem = {
+          source: `speech:${pendingAudio.length}:${event.text}`,
+          text: event.text,
+          language: event.language || $("#language-select").value,
+        };
+        pendingAudio.push(audioItem);
+        queueSpeech(audioItem);
+      } else if (event.message) {
+        toast(event.message);
+      }
       return;
     }
     if (event.type === "error") {
@@ -384,7 +421,7 @@
     play.className = "play-audio";
     play.textContent = "▶ Play voice";
     play.addEventListener("click", () => {
-      pendingAudio.forEach((url) => playedAudio.delete(url));
+      pendingAudio.forEach((item) => playedAudio.delete(item.source));
       void unlockAudio().then(playQueuedAudio);
     });
     actions.append(play);
@@ -392,38 +429,80 @@
   }
 
   async function playQueuedAudio() {
-    const urls = pendingAudio.filter((url) => !playedAudio.has(url));
-    if (!urls.length) return;
-    for (const url of urls) {
-      queueAudio(url);
+    const queued = pendingAudio.filter((item) => !playedAudio.has(item.source));
+    if (!queued.length) return;
+    for (const item of queued) {
+      queueAudio(item);
     }
     await audioPlayback;
   }
 
-  function queueAudio(url) {
-    if (!audioUnlocked || playedAudio.has(url)) return;
-    playedAudio.add(url);
+  function queueAudio(item) {
+    if (!audioUnlocked || playedAudio.has(item.source)) return;
+    playedAudio.add(item.source);
     const generation = audioGeneration;
     audioPlayback = audioPlayback.then(() => new Promise((resolve) => {
       if (generation !== audioGeneration) {
         resolve();
         return;
       }
-      const audio = new Audio(url);
+      let fallbackStarted = false;
+      const fallback = () => {
+        if (fallbackStarted) return;
+        fallbackStarted = true;
+        speakFallback(item, resolve, generation);
+      };
+      if (item.source.startsWith("speech:")) {
+        fallback();
+        return;
+      }
+      const audio = new Audio(item.source);
       activeAudio = audio;
       finishActiveAudio = resolve;
       $("#robot-scene").classList.add("speaking");
       audio.addEventListener("ended", resolve, { once: true });
-      audio.addEventListener("error", resolve, { once: true });
+      audio.addEventListener("error", () => {
+        toast("MP3 playback failed; using browser speech.");
+        fallback();
+      }, { once: true });
       audio.play().catch(() => {
-        toast("Audio could not play. Your text response is still available.");
-        resolve();
+        toast("MP3 playback failed; using browser speech.");
+        fallback();
       });
     })).finally(() => {
       activeAudio = null;
       finishActiveAudio = null;
       $("#robot-scene").classList.remove("speaking");
     });
+  }
+
+  function queueSpeech(item) {
+    if (!audioUnlocked || playedAudio.has(item.source)) return;
+    playedAudio.add(item.source);
+    const generation = audioGeneration;
+    audioPlayback = audioPlayback.then(() => new Promise((resolve) => {
+      speakFallback(item, resolve, generation);
+    })).finally(() => {
+      activeUtterance = null;
+      $("#robot-scene").classList.remove("speaking");
+    });
+  }
+
+  function speakFallback(item, resolve, generation) {
+    if (!audioUnlocked || generation !== audioGeneration || !("speechSynthesis" in window)) {
+      if (!("speechSynthesis" in window)) {
+        toast("Browser speech synthesis is unavailable. The text response is still available.");
+      }
+      resolve();
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(item.text);
+    utterance.lang = item.language === "ml" ? "ml-IN" : "en-IN";
+    utterance.onend = resolve;
+    utterance.onerror = resolve;
+    activeUtterance = utterance;
+    $("#robot-scene").classList.add("speaking");
+    window.speechSynthesis.speak(utterance);
   }
 
   async function unlockAudio() {
@@ -458,9 +537,13 @@
     audioGeneration += 1;
     activeAudio?.pause();
     finishActiveAudio?.();
+    window.speechSynthesis?.cancel();
+    activeUtterance = null;
     activeAudio = null;
     finishActiveAudio = null;
     audioPlayback = Promise.resolve();
+    pendingAudio = [];
+    playedAudio.clear();
     $("#robot-scene").classList.remove("speaking");
   }
 
@@ -483,7 +566,12 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ event_id: eventId, status: "absent" }),
               });
-              if (!applied.ok) throw new Error("Could not apply the event update.");
+              const result = await applied.json().catch(() => ({}));
+              if (!applied.ok) {
+                throw new Error(result.detail || "Could not apply the event update.");
+              }
+              await refreshMemory();
+              toast(`${proposal.person_name} marked absent. All open AVA pages were updated.`);
             }
             input.value = "";
             input.style.height = "auto";
@@ -824,26 +912,20 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "AVA could not speak this segment.");
       if (result.notice) toast(result.notice);
-      pendingAudio.push(result.url);
-      queueAudio(result.url);
+      const audioItem = {
+        source: result.url,
+        text: section.text,
+        language: $("#language-select").value,
+      };
+      pendingAudio.push(audioItem);
+      queueAudio(audioItem);
       $("#robot-caption").textContent = "Speaking selected script segment";
     } catch (error) {
       toast(error.message || "AVA could not speak this segment.");
     }
   });
   $("#studio-stop").addEventListener("click", async () => {
-    stopAudio();
-    if (!eventId) {
-      toast("Browser playback stopped. No live event is connected for server-side cancellation.");
-      return;
-    }
-    try {
-      const response = await fetch(`/api/live-events/${eventId}/stop-speaking`, { method: "POST" });
-      if (!response.ok) throw new Error("Server-side speech could not be stopped.");
-      toast("Current speech stop requested.");
-    } catch (error) {
-      toast(error.message || "Current speech stop failed.");
-    }
+    await stopCurrentSpeech();
   });
   restoreStudioDraft();
 
@@ -1117,6 +1199,23 @@
   });
 
   $("#enable-audio").addEventListener("click", () => void unlockAudio());
+  async function stopCurrentSpeech() {
+    stopAudio();
+    if (socket?.readyState === WebSocket.OPEN && currentMessage) {
+      socket.send(JSON.stringify({ type: "stop" }));
+    }
+    if (eventId) {
+      try {
+        const response = await fetch(`/api/live-events/${eventId}/stop-speaking`, { method: "POST" });
+        if (!response.ok) throw new Error("Server could not stop the event speech.");
+      } catch (error) {
+        toast(error.message || "AVA stopped browser audio; the event service could not be reached.");
+        return;
+      }
+    }
+    toast("AVA stopped speaking.");
+  }
+  $("#stop-speaking").addEventListener("click", () => void stopCurrentSpeech());
 
   async function refreshHealth() {
     try {
@@ -1202,8 +1301,8 @@
         });
         if (preferencesResponse.ok) {
           const preferences = await preferencesResponse.json();
-          $("#language-select").value = preferences.language;
-          voices.value = preferences.voice;
+          syncLanguageToggle(preferences.language);
+          voices.value = preferences.voice || languageVoices[preferences.language];
         }
       }
       const microphones = $("#mic-setting");
@@ -1240,19 +1339,43 @@
   });
 
   $("#language-select").addEventListener("change", async (event) => {
+    const language = event.target.value === "ml" ? "ml" : "en";
+    syncLanguageToggle(language);
     if (!sessionId) return;
     try {
-      await fetch(`/api/preferences/${encodeURIComponent(sessionId)}`, {
+      const response = await fetch(`/api/preferences/${encodeURIComponent(sessionId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: event.target.value, style: "Professional", voice: "" }),
+        body: JSON.stringify({
+          language,
+          style: "Professional",
+          voice: languageVoices[language],
+        }),
       });
+      if (!response.ok) throw new Error("Language preference could not be saved.");
     } catch {
       toast("Language preference could not be saved.");
     }
   });
+  $("#language-en").addEventListener("click", () => {
+    $("#language-select").value = "en";
+    $("#language-select").dispatchEvent(new Event("change"));
+  });
+  $("#language-ml").addEventListener("click", () => {
+    $("#language-select").value = "ml";
+    $("#language-select").dispatchEvent(new Event("change"));
+  });
 
-  ensureSession().then(() => {
+  ensureSession().then(async () => {
+    try {
+      const response = await fetch(`/api/preferences/${encodeURIComponent(sessionId)}`);
+      if (response.ok) {
+        const preferences = await response.json();
+        if (preferences.language) syncLanguageToggle(preferences.language);
+      }
+    } catch {
+      toast("Saved language preference could not be loaded.");
+    }
     connect();
     void refreshMemory();
     void refreshHealth();

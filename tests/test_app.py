@@ -1,6 +1,8 @@
 """FastAPI integration tests without a live model, microphone, or robot."""
 
+import base64
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -11,6 +13,27 @@ from config.settings import AppSettings
 def test_api_serves_ui_session_and_event_state(tmp_path: Path, monkeypatch) -> None:
     from interface import api as api_module
 
+    async def no_gemini_generation():
+        return {
+            "available": False,
+            "key_set": False,
+            "model": "gemini-3.5-flash",
+            "fallback_model": "gemini-3.6-flash",
+            "message": "Gemini API key missing",
+        }
+
+    async def no_tts_generation(
+        self, text: str, language: str, *, cache_version: int | str | None = None
+    ) -> Path:
+        _ = (self, text, language, cache_version)
+        audio_path = tmp_path / "audio" / "health.mp3"
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"test-audio")
+        return audio_path
+
+    monkeypatch.setattr(api_module, "gemini_health_check", no_gemini_generation)
+    monkeypatch.setattr(api_module.SpeechSynthesizer, "synthesize", no_tts_generation)
+
     monkeypatch.setattr(
         api_module,
         "collect_health",
@@ -18,7 +41,7 @@ def test_api_serves_ui_session_and_event_state(tmp_path: Path, monkeypatch) -> N
             "gemini": {
                 "available": False,
                 "configured": False,
-                "model": "gemini-2.5-flash",
+                "model": "gemini-3.5-flash",
                 "message": "Gemini API key missing",
             },
             "ffmpeg": {"available": True, "message": "ffmpeg"},
@@ -42,12 +65,15 @@ def test_api_serves_ui_session_and_event_state(tmp_path: Path, monkeypatch) -> N
         status = client.get("/api/health").json()
         assert status["status"] == "degraded"
         assert status["checks"]["gemini"]["available"] is False
+        assert status["checks"]["gemini"]["key_set"] is False
+        assert status["checks"]["tts"]["available"] is True
         home = client.get("/").text
         assert "Your voice on stage" in home
         assert "Anchoring Studio" in home
         assert "Generate script" in home
-        assert "gemini-2.5-flash" in home
+        assert "gemini-3.5-flash" in home
         assert "Live event control" in client.get("/control").text
+        assert client.get("/static/.env").status_code == 404
         assert client.get("/static/css/ava.css").status_code == 200
         session_id = client.post("/api/sessions").json()["session_id"]
 
@@ -79,7 +105,7 @@ def test_websocket_streams_template_response(tmp_path: Path, monkeypatch) -> Non
         api_module,
         "collect_health",
         lambda settings: {
-            "gemini": {"available": True, "configured": True, "model": "gemini-2.5-flash", "message": "ok"},
+            "gemini": {"available": True, "configured": True, "model": "gemini-3.5-flash", "message": "ok"},
             "ffmpeg": {"available": True, "message": "ok"},
             "microphone": {"available": True, "message": "ok"},
             "database": {"available": True, "message": str(settings.database_path)},
@@ -119,6 +145,8 @@ def test_websocket_streams_template_response(tmp_path: Path, monkeypatch) -> Non
             websocket.send_text("not-json")
             malformed = websocket.receive_json()
             assert malformed["type"] == "error"
+            websocket.send_json({"type": "stop"})
+            assert websocket.receive_json()["type"] == "speech_stop"
             websocket.send_json({"message": "hello", "mode": "chat", "language": "en"})
             events = []
             while True:
@@ -134,6 +162,8 @@ def test_websocket_streams_template_response(tmp_path: Path, monkeypatch) -> Non
         audio_response = client.get(audio_event["url"])
         assert audio_response.status_code == 200
         assert audio_response.content == b"mp3-data"
+        assert audio_event["mime_type"] == "audio/mpeg"
+        assert base64.b64decode(audio_event["audio_base64"]) == b"mp3-data"
         assert application.state.pipeline.repository.get_recent_messages(session_id, 2)[-1]["role"] == "assistant"
 
 
@@ -146,7 +176,7 @@ def test_live_event_updates_broadcast_to_two_websocket_clients(
         api_module,
         "collect_health",
         lambda settings: {
-            "gemini": {"available": True, "configured": True, "model": "gemini-2.5-flash", "message": "ok"},
+            "gemini": {"available": True, "configured": True, "model": "gemini-3.5-flash", "message": "ok"},
             "ffmpeg": {"available": True, "message": "ok"},
             "microphone": {"available": True, "message": "ok"},
             "database": {"available": True, "message": str(settings.database_path)},
@@ -200,6 +230,102 @@ def test_live_event_updates_broadcast_to_two_websocket_clients(
                 assert update["event"]["items"][0]["status"] == "absent"
 
 
+def test_chat_absence_command_updates_and_broadcasts_to_open_pages(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from interface import api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "collect_health",
+        lambda settings: {
+            "gemini": {"available": True, "configured": True, "model": "test", "message": "ok"},
+            "ffmpeg": {"available": True, "message": "ok"},
+            "microphone": {"available": True, "message": "ok"},
+            "database": {"available": True, "message": str(settings.database_path)},
+        },
+    )
+    database = tmp_path / "command-broadcast.sqlite3"
+    settings = AppSettings(
+        config_path=tmp_path / "ava.yaml",
+        memory={"database_path": str(database)},
+        llm={"routes": {"default": {"backend": "template"}}},
+        speech={"cache_dir": str(tmp_path / "audio")},
+        robot={"mode": "simulated"},
+    )
+    application = create_app(settings)
+
+    with TestClient(application) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        created = client.post(
+            "/api/events",
+            json={
+                "session_id": session_id,
+                "name": "Arts day",
+                "schedule": [
+                    {"title": "Opening", "type": "welcome"},
+                    {
+                        "title": "Guest address",
+                        "type": "speech",
+                        "participant": "Dr. Nair",
+                    },
+                    {
+                        "title": "Second address",
+                        "type": "speech",
+                        "participant": "Dr. Nair",
+                    },
+                ],
+            },
+        ).json()
+        event_id = created["id"]
+        with client.websocket_connect(f"/ws/{session_id}") as main_page, client.websocket_connect(
+            f"/ws/{session_id}"
+        ) as control_page:
+            assert main_page.receive_json()["type"] == "event_state_changed"
+            assert control_page.receive_json()["type"] == "event_state_changed"
+
+            proposal_response = client.post(
+                f"/api/live-events/{event_id}/parse-command",
+                json={"message": "Dr. Nair has not arrived, remove him"},
+            )
+            assert proposal_response.status_code == 200
+            proposal = proposal_response.json()["proposal"]
+            assert proposal["person_name"] == "Dr. Nair"
+            assert proposal["action"] == "set_absent"
+
+            applied = client.patch(
+                f"/api/event/items/{proposal['item_id']}",
+                json={"event_id": event_id, "status": "absent"},
+            )
+            assert applied.status_code == 200
+            assert [
+                item["status"]
+                for item in applied.json()["items"]
+                if item["person_name"] == "Dr. Nair"
+            ] == ["absent", "absent"]
+            for websocket in (main_page, control_page):
+                update = websocket.receive_json()
+                assert update["type"] == "event_state_changed"
+                assert update["state_version"] == applied.json()["state_version"]
+                assert all(
+                    item["status"] == "absent"
+                    for item in update["event"]["items"]
+                    if item["person_name"] == "Dr. Nair"
+                )
+
+            undone = client.post(f"/api/live-events/{event_id}/undo")
+            assert undone.status_code == 200
+            for websocket in (main_page, control_page):
+                update = websocket.receive_json()
+                assert update["type"] == "event_state_changed"
+                assert update["state_version"] == undone.json()["state_version"]
+                assert all(
+                    item["status"] == "pending"
+                    for item in update["event"]["items"]
+                    if item["person_name"] == "Dr. Nair"
+                )
+
+
 def test_live_event_speech_uses_saved_voice_preference(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -209,7 +335,7 @@ def test_live_event_speech_uses_saved_voice_preference(
         api_module,
         "collect_health",
         lambda settings: {
-            "gemini": {"available": True, "configured": True, "model": "gemini-2.5-flash", "message": "ok"},
+            "gemini": {"available": True, "configured": True, "model": "gemini-3.5-flash", "message": "ok"},
             "ffmpeg": {"available": True, "message": "ok"},
             "microphone": {"available": True, "message": "ok"},
             "database": {"available": True, "message": str(settings.database_path)},
@@ -286,3 +412,292 @@ def test_live_event_speech_uses_saved_voice_preference(
             ("ml", "ml-IN-MidhunNeural"),
             ("ml", "ml-IN-MidhunNeural"),
         ]
+
+
+def test_control_schedule_crud_and_reorder_routes(tmp_path: Path, monkeypatch) -> None:
+    from interface import api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "collect_health",
+        lambda settings: {
+            "gemini": {"available": False, "configured": False, "message": "not configured"},
+            "ffmpeg": {"available": True, "message": "ok"},
+            "microphone": {"available": True, "message": "ok"},
+            "database": {"available": True, "message": str(settings.database_path)},
+        },
+    )
+    database = tmp_path / "control-routes.sqlite3"
+    settings = AppSettings(
+        config_path=tmp_path / "ava.yaml",
+        memory={"database_path": str(database)},
+        llm={"routes": {"default": {"backend": "template"}}},
+        speech={"cache_dir": str(tmp_path / "audio")},
+        robot={"mode": "simulated"},
+    )
+
+    with TestClient(create_app(settings)) as client:
+        session_id = client.post("/api/sessions").json()["session_id"]
+        created = client.post(
+            "/api/events",
+            json={
+                "session_id": session_id,
+                "name": "Schedule CRUD",
+                "schedule": [
+                    {"title": "Opening", "type": "welcome"},
+                    {"title": "Guest address", "type": "speech", "participant": "Dr. Nair"},
+                ],
+            },
+        )
+        assert created.status_code == 200
+        event_id = created.json()["id"]
+        live = client.get(f"/api/live-events/{event_id}").json()
+        first_id, second_id = [item["id"] for item in live["items"]]
+
+        added = client.post(
+            "/api/event/items",
+            json={
+                "event_id": event_id,
+                "position": 1,
+                "title": "Late arrival",
+                "type": "speech",
+                "person_name": "Dr. Rao",
+            },
+        )
+        assert added.status_code == 200
+        assert [item["title"] for item in added.json()["items"]] == [
+            "Opening", "Late arrival", "Guest address"
+        ]
+        added_item = added.json()["items"][1]
+
+        edited = client.patch(
+            f"/api/event/items/{added_item['id']}",
+            json={
+                "event_id": event_id,
+                "title": "Updated late arrival",
+                "designation": "Guest speaker",
+            },
+        )
+        assert edited.status_code == 200
+        assert edited.json()["items"][1]["title"] == "Updated late arrival"
+        assert edited.json()["items"][1]["designation"] == "Guest speaker"
+
+        reordered = client.post(
+            "/api/event/reorder",
+            json={
+                "event_id": event_id,
+                "item_ids": [second_id, added_item["id"], first_id],
+            },
+        )
+        assert reordered.status_code == 200
+        assert [item["id"] for item in reordered.json()["items"]] == [
+            second_id, added_item["id"], first_id
+        ]
+
+        deleted = client.delete(
+            f"/api/event/items/{added_item['id']}?event_id={event_id}"
+        )
+        assert deleted.status_code == 200
+        assert next(
+            item for item in deleted.json()["items"] if item["id"] == added_item["id"]
+        )["status"] == "removed"
+        refreshed = client.get(f"/api/live-events/{event_id}").json()
+        assert refreshed["state_version"] == deleted.json()["state_version"]
+        assert refreshed["items"][1]["title"] == "Updated late arrival"
+
+
+def test_next_and_call_now_speak_live_schedule_with_template_on_llm_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from interface import api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "collect_health",
+        lambda settings: {
+            "gemini": {"available": False, "configured": False, "message": "not configured"},
+            "ffmpeg": {"available": True, "message": "ok"},
+            "microphone": {"available": True, "message": "ok"},
+            "database": {"available": True, "message": str(settings.database_path)},
+        },
+    )
+    database = tmp_path / "call-now.sqlite3"
+    settings = AppSettings(
+        config_path=tmp_path / "ava.yaml",
+        memory={"database_path": str(database)},
+        llm={"routes": {"default": {"backend": "template"}}},
+        speech={"cache_dir": str(tmp_path / "audio")},
+        robot={"mode": "simulated"},
+    )
+    application = create_app(settings)
+
+    async def no_audio(
+        text: str,
+        language: str,
+        *,
+        voice: str | None = None,
+        cache_version: int | str | None = None,
+    ) -> Path:
+        _ = (text, language, voice, cache_version)
+        audio_path = tmp_path / "audio" / "call-now.mp3"
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"mp3-data")
+        return audio_path
+
+    with TestClient(application) as client:
+        application.state.pipeline.synthesizer.synthesize = no_audio
+        session_id = client.post("/api/sessions").json()["session_id"]
+        created = client.post(
+            "/api/events",
+            json={
+                "session_id": session_id,
+                "name": "Arts day",
+                "schedule": [
+                    {"title": "Guest address", "type": "speech", "participant": "Dr. Nair"},
+                    {"title": "Student address", "type": "speech", "participant": "Anu"},
+                    {"title": "Music performance", "type": "performance"},
+                ],
+            },
+        ).json()
+        event_id = created["id"]
+        items = application.state.event_service.get_event(event_id)["items"]
+
+        def gemini_failure(*args, **kwargs):
+            _ = (args, kwargs)
+            raise RuntimeError("Gemini unavailable")
+
+        application.state.event_service.save_summary(
+            event_id,
+            items[0]["id"],
+            "The school garden project helps students learn. The speaker thanked volunteers.",
+        )
+        application.state.pipeline.router.stream = gemini_failure
+
+        next_response = client.post(f"/api/live-events/{event_id}/call-now", json={})
+        assert next_response.status_code == 200
+        next_result = next_response.json()
+        assert next_result["used_fallback"] is True
+        assert "Thank you, Dr. Nair" in next_result["text"]
+        assert "sharing insights on The school garden project helps students learn" in next_result["text"]
+        assert "Student address" in next_result["text"]
+        assert next_result["event"]["current_item_id"] == items[1]["id"]
+        assert next_result["audio_url"].startswith("/api/audio/")
+
+        call_response = client.post(
+            f"/api/live-events/{event_id}/call-now",
+            json={"item_id": items[2]["id"], "include_summary": True},
+        )
+        assert call_response.status_code == 200
+        call_result = call_response.json()
+        assert call_result["used_fallback"] is True
+        assert "Thank you, Anu" in call_result["text"]
+        assert "Music performance" in call_result["text"]
+        assert call_result["event"]["current_item_id"] == items[2]["id"]
+
+
+def test_finished_speaker_summary_is_saved_and_used_in_next_transition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from interface import api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "collect_health",
+        lambda settings: {
+            "gemini": {"available": True, "configured": True, "message": "ok"},
+            "ffmpeg": {"available": True, "message": "ok"},
+            "microphone": {"available": True, "message": "ok"},
+            "database": {"available": True, "message": str(settings.database_path)},
+        },
+    )
+    database = tmp_path / "speaker-summary.sqlite3"
+    settings = AppSettings(
+        config_path=tmp_path / "ava.yaml",
+        memory={"database_path": str(database)},
+        llm={"routes": {"default": {"backend": "template"}}},
+        speech={"cache_dir": str(tmp_path / "audio")},
+        robot={"mode": "simulated"},
+    )
+    application = create_app(settings)
+    transcript = (
+        "The speaker described the school garden project. "
+        "Students will plant native seeds next week."
+    )
+    summary = (
+        "Anjali described the school garden project. "
+        "She thanked students for preparing native seeds."
+    )
+    prompts: list[tuple[str, str]] = []
+    decision = SimpleNamespace(backend="gemini", model="gemini-3.5-flash")
+
+    def fake_stream(
+        task: str, language: str, messages: list[dict[str, str]]
+    ) -> tuple[list[str], SimpleNamespace]:
+        _ = language
+        prompts.append((task, messages[-1]["content"]))
+        if task == "speaker_summary":
+            return [summary], decision
+        return [
+            "Thank you, Anjali, for sharing those insights. We now move to the student performance."
+        ], decision
+
+    async def no_audio(
+        text: str,
+        language: str,
+        *,
+        voice: str | None = None,
+        cache_version: int | str | None = None,
+    ) -> Path:
+        _ = (text, language, voice, cache_version)
+        audio = tmp_path / "audio" / "transition.mp3"
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"mp3-data")
+        return audio
+
+    with TestClient(application) as client:
+        application.state.pipeline.router.stream = fake_stream
+        application.state.pipeline.synthesizer.synthesize = no_audio
+        session_id = client.post("/api/sessions").json()["session_id"]
+        created = client.post(
+            "/api/events",
+            json={
+                "session_id": session_id,
+                "name": "School day",
+                "schedule": [
+                    {"title": "Guest address", "type": "speech", "participant": "Anjali"},
+                    {"title": "Student performance", "type": "performance"},
+                ],
+            },
+        ).json()
+        event_id = created["id"]
+        items = application.state.event_service.get_event(event_id)["items"]
+        application.state.event_service.advance(event_id, item_id=items[0]["id"])
+
+        transcript_response = client.put(
+            f"/api/live-events/{event_id}/items/{items[0]['id']}/transcript",
+            json={"text": transcript},
+        )
+        finish_response = client.post(
+            f"/api/live-events/{event_id}/items/{items[0]['id']}/finish"
+        )
+        transition_response = client.post(
+            f"/api/live-events/{event_id}/call-now", json={}
+        )
+
+    assert transcript_response.status_code == 200
+    assert finish_response.status_code == 200
+    assert finish_response.json()["summary"] == summary
+    finished_item = next(
+        item
+        for item in finish_response.json()["event"]["items"]
+        if item["id"] == items[0]["id"]
+    )
+    assert finished_item["transcript"] == transcript
+    assert finished_item["summary"] == summary
+    assert finished_item["status"] == "done"
+    assert transition_response.status_code == 200
+    transition_prompt = next(
+        prompt for task, prompt in prompts if task == "anchoring_script"
+    )
+    assert summary in transition_prompt
+    assert transition_response.json()["text"].startswith("Thank you, Anjali")

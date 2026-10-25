@@ -57,11 +57,15 @@
         <div class="topbar-actions">
           <a class="audio-unlock" href="/control">Live event control</a>
           <span class="provider-pill checking" id="provider-status" role="status">Gemini · checking</span>
-          <label class="sr-only" for="language-select">Response language</label>
-          <select id="language-select" class="language-select" aria-label="Response language">
+          <select id="language-select" class="sr-only" aria-hidden="true" tabindex="-1">
             <option value="en">EN · English</option><option value="ml">മലയാളം</option>
           </select>
+          <div class="language-toggle" role="group" aria-label="Response language">
+            <button id="language-en" type="button" aria-pressed="true">EN</button>
+            <button id="language-ml" type="button" aria-pressed="false">മലയാളം</button>
+          </div>
           <button id="enable-audio" class="audio-unlock" type="button">Enable audio</button>
+          <button id="stop-speaking" class="stop-speaking" type="button" aria-label="Stop current speech">■ Stop</button>
           <button id="theme-status" class="connection-pill connecting" type="button" aria-live="polite" title="Connection status"><span class="status-indicator"></span><span id="connection-label">Connecting</span></button>
         </div>
       </header>
@@ -194,7 +198,7 @@
           <section class="think-card">
             <div class="panel-title"><div><span class="panel-kicker">BEHIND THE SCENES</span><h2>How AVA thinks</h2></div><span class="think-spark">✳</span></div>
             <div class="think-row"><span class="think-label">Intent</span><span class="think-value" id="think-intent">Waiting for your cue</span></div>
-            <div class="think-row"><span class="think-label">Model</span><span class="think-value model-value" id="think-model">gemini-2.5-flash</span></div>
+            <div class="think-row"><span class="think-label">Model</span><span class="think-value model-value" id="think-model">gemini-3.5-flash</span></div>
             <div class="think-row"><span class="think-label">Response time</span><span class="think-value" id="think-latency">—</span></div>
             <div class="think-context"><span class="think-label">Relevant memory</span><p id="think-context">Context appears when it helps.</p></div>
           </section>
@@ -216,7 +220,7 @@
   <dialog id="settings-dialog" class="settings-dialog">
     <form method="dialog" class="settings-heading"><div><span class="panel-kicker">PREFERENCES</span><h2>Make AVA yours</h2></div><button class="icon-button" aria-label="Close settings">×</button></form>
     <form id="settings-form" class="settings-form">
-      <label>Gemini model<input id="model-setting" readonly value="gemini-2.5-flash"><small>Set GEMINI_MODEL in .env or config/ava.yaml.</small></label>
+      <label>Gemini model<input id="model-setting" readonly value="gemini-3.5-flash"><small>Set GEMINI_MODEL in .env or config/ava.yaml.</small></label>
       <label>Speaking voice<select id="voice-setting"></select></label>
       <label>Microphone<select id="mic-setting"><option value="">Default microphone</option></select></label>
       <label>Robot connection<input id="robot-setting" readonly value="simulated"></label>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -18,7 +19,12 @@ from memory.repository import MemoryRepository
 from modules.script_gen import build_anchoring_prompt, detect_script_task
 from modules.story_gen import build_story_prompt, update_story_state
 from modules.robot import RobotController, SimulatedRobot, gesture_for_response
-from services.event_service import EventService, blocked_names, contains_blocked_name
+from services.event_service import (
+    EventService,
+    blocked_names,
+    contains_blocked_name,
+    drop_blocked_name_sentences,
+)
 from modules.tts import SentenceBuffer, SpeechSynthesizer, clean_tts_text
 from nlu.intent_classifier import IntentClassifier
 from orchestrator.router import ModelRouter, STREAM_RESET
@@ -166,18 +172,27 @@ class ConversationPipeline:
             selected_language = "en"
         if intent.intent == "language_switch":
             selected_language = "ml" if "malay" in message.casefold() or "മലയാളം" in message else "en"
-            await asyncio.to_thread(
-                self.repository.set_preferences,
-                session_id,
-                language=selected_language,
-                style=str(context.preferences.get("style", "Professional")),
-                voice=str(context.preferences.get("voice", "")),
-            )
+        preferred_voice = str(context.preferences.get("voice") or "")
+        voice_prefix = "ml-IN-" if selected_language == "ml" else "en-IN-"
+        configured_voices = getattr(self.synthesizer, "voices", {})
+        voice = (
+            preferred_voice
+            if preferred_voice.startswith(voice_prefix)
+            else configured_voices.get(selected_language)
+        )
+        context = replace(
+            context,
+            preferences={
+                **context.preferences,
+                "language": selected_language,
+                "voice": voice or "",
+            },
+        )
 
         await asyncio.to_thread(
             self.repository.add_message, session_id, "user", message
         )
-        task, prompt, response_language = self._select_task(
+        task, prompt, _ = self._select_task(
             intent.intent,
             message,
             mode,
@@ -190,18 +205,33 @@ class ConversationPipeline:
             ),
             context.preferences,
         )
+        language_instruction = (
+            "Reply in natural spoken Malayalam, written in Malayalam script. "
+            "Use short, clear sentences that are comfortable to speak aloud."
+            if selected_language == "ml"
+            else "Reply in natural spoken English using short, clear sentences."
+        )
         system_prompt = (
             "You are AVA, a friendly AI virtual anchoring assistant. "
-            f"Reply in natural spoken {response_language} and respect user intent. "
+            f"{language_instruction} Respect user intent. "
             "Use provided memory only when relevant; do not claim to control unavailable hardware."
         )
-        messages = self.memory.build_prompt(context, system_prompt, prompt)
+        defer_anchoring_output = task in {"anchoring_script", "schedule_next"}
+        prompt_context = (
+            replace(
+                context,
+                active_event=self._event_prompt_state(context.active_event),
+            )
+            if defer_anchoring_output and context.active_event
+            else context
+        )
+        messages = self.memory.build_prompt(prompt_context, system_prompt, prompt)
         await asyncio.to_thread(
             self.repository.set_preferences,
             session_id,
             language=selected_language,
             style=str(context.preferences.get("style", "Professional")),
-            voice=str(context.preferences.get("voice", "")),
+            voice=voice or "",
         )
 
         yield {
@@ -222,9 +252,7 @@ class ConversationPipeline:
         started = time.monotonic()
         full_text = ""
         decision = None
-        voice = str(context.preferences.get("voice") or "") or None
         audio_count = 0
-        defer_anchoring_output = task in {"anchoring_script", "schedule_next"}
         stop_speaking = threading.Event()
         self._active_stream_stops[session_id] = stop_speaking
 
@@ -245,6 +273,18 @@ class ConversationPipeline:
             sentence_buffer = SentenceBuffer()
             loop = asyncio.get_running_loop()
             token_queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue(maxsize=8)
+
+            async def emit_audio(text: str, audio_path: Any) -> dict[str, Any]:
+                audio_bytes = await asyncio.to_thread(audio_path.read_bytes)
+                return {
+                    "type": "audio",
+                    "text": clean_tts_text(text),
+                    "language": selected_language,
+                    "mime_type": "audio/mpeg",
+                    "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "url": f"/api/audio/{audio_path.name}",
+                }
+
             stop_stream = stop_speaking
             producer = asyncio.create_task(
                 asyncio.to_thread(
@@ -286,11 +326,7 @@ class ConversationPipeline:
                                 if stop_stream.is_set():
                                     break
                                 audio_count += 1
-                                yield {
-                                    "type": "audio",
-                                    "text": clean_tts_text(result.text),
-                                    "url": f"/api/audio/{audio.name}",
-                                }
+                                yield await emit_audio(result.text, audio)
                                 notice = self.synthesizer.get_status(audio)
                                 if notice:
                                     yield {"type": "audio_notice", "message": notice}
@@ -300,9 +336,11 @@ class ConversationPipeline:
                                 )
                                 yield {
                                     "type": "audio_unavailable",
+                                    "text": clean_tts_text(result.text),
+                                    "language": selected_language,
                                     "message": (
-                                        "Text response is ready; speech is unavailable. "
-                                        "Check Edge TTS, offline TTS dependencies, and ffmpeg."
+                                        "Edge and offline speech synthesis are unavailable; "
+                                        "using browser speech if enabled."
                                     ),
                                 }
                     await asyncio.sleep(0)
@@ -322,17 +360,15 @@ class ConversationPipeline:
                         if stop_stream.is_set():
                             return
                         audio_count += 1
-                        yield {
-                            "type": "audio",
-                            "text": clean_tts_text(result.text),
-                            "url": f"/api/audio/{audio.name}",
-                        }
+                        yield await emit_audio(result.text, audio)
                     except Exception as exc:
                         logger.warning(
                             "Speech synthesis unavailable: %s", type(exc).__name__
                         )
                         yield {
                             "type": "audio_unavailable",
+                            "text": clean_tts_text(result.text),
+                            "language": selected_language,
                             "message": "Text response is ready; speech is unavailable.",
                         }
                     else:
@@ -353,7 +389,7 @@ class ConversationPipeline:
                 != context.active_event.get("state_version")
             ):
                 context = replace(context, active_event=latest_event)
-                task, prompt, response_language = self._select_task(
+                task, prompt, _ = self._select_task(
                     intent.intent,
                     message,
                     mode,
@@ -362,7 +398,14 @@ class ConversationPipeline:
                     context.active_story if context.continues_story else None,
                     context.preferences,
                 )
-                messages = self.memory.build_prompt(context, system_prompt, prompt)
+                messages = self.memory.build_prompt(
+                    replace(
+                        context,
+                        active_event=self._event_prompt_state(latest_event),
+                    ),
+                    system_prompt,
+                    prompt,
+                )
                 yield {"type": "reset"}
                 async for event in stream_generated(messages):
                     yield event
@@ -375,6 +418,10 @@ class ConversationPipeline:
             }
             return
 
+        if defer_anchoring_output and context.active_event:
+            full_text = drop_blocked_name_sentences(
+                full_text, blocked_names(context.active_event)
+            )
         validation = self.validator.validate(full_text, selected_language)
         event_blocked_name = (
             contains_blocked_name(full_text, blocked_names(context.active_event))
@@ -402,6 +449,10 @@ class ConversationPipeline:
             audio_count = 0
             async for event in stream_generated(correction_messages):
                 yield event
+            if defer_anchoring_output and context.active_event:
+                full_text = drop_blocked_name_sentences(
+                    full_text, blocked_names(context.active_event)
+                )
             validation = self.validator.validate(full_text, selected_language)
             event_blocked_name = (
                 contains_blocked_name(full_text, blocked_names(context.active_event))
@@ -479,9 +530,13 @@ class ConversationPipeline:
                     audio = await self.synthesizer.synthesize(
                         sentence, selected_language, **options
                     )
+                    audio_bytes = await asyncio.to_thread(audio.read_bytes)
                     yield {
                         "type": "audio",
                         "text": clean_tts_text(sentence),
+                        "language": selected_language,
+                        "mime_type": "audio/mpeg",
+                        "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
                         "url": f"/api/audio/{audio.name}",
                     }
                     notice = self.synthesizer.get_status(audio)
@@ -493,6 +548,8 @@ class ConversationPipeline:
                     )
                     yield {
                         "type": "audio_unavailable",
+                        "text": clean_tts_text(sentence),
+                        "language": selected_language,
                         "message": "Text response is ready; speech is unavailable.",
                     }
 
@@ -595,6 +652,41 @@ class ConversationPipeline:
     def _route_model(self, task: str, language: str) -> str:
         route = self.router.select_route(task, language)
         return str(route.get("model", route.get("backend", "template")))
+
+    @staticmethod
+    def _event_prompt_state(event: dict[str, Any]) -> dict[str, Any]:
+        """Keep only live, eligible schedule details in model prompt context."""
+        forbidden = blocked_names(event)
+        items = []
+        for item in event.get("items", []):
+            if item.get("status") not in {"pending", "arrived", "on_stage", "done"}:
+                continue
+            safe_item = {
+                key: item.get(key, "")
+                for key in (
+                    "id",
+                    "order_index",
+                    "title",
+                    "type",
+                    "person_name",
+                    "designation",
+                    "status",
+                    "summary",
+                )
+            }
+            for key, value in safe_item.items():
+                if isinstance(value, str):
+                    for name in forbidden:
+                        value = re.sub(re.escape(name), "", value, flags=re.IGNORECASE)
+                    safe_item[key] = re.sub(r"\s+", " ", value).strip()
+            items.append(safe_item)
+        chief_guest = str(event.get("chief_guest", ""))
+        if contains_blocked_name(chief_guest, forbidden):
+            chief_guest = ""
+        return {
+            key: event.get(key, "")
+            for key in ("id", "session_id", "name", "type", "date", "venue", "tone", "language", "status", "state_version", "current_item_id")
+        } | {"chief_guest": chief_guest, "items": items}
 
     @staticmethod
     def _safe_fallback(task: str, language: str, message: str) -> str:

@@ -30,16 +30,16 @@ def test_router_falls_back_to_template(tmp_path: Path) -> None:
     settings = AppSettings(
         config_path=tmp_path / "ava.yaml",
         llm={
-            "default_model": "gemma3:4b",
+            "default_model": "gemini-3.5-flash",
             "retries": 1,
             "timeout_seconds": 0.1,
             "routes": {
-                "chat_question": {"backend": "ollama", "model": "gemma3:4b"}
+                "chat_question": {"backend": "gemini", "model": "gemini-3.5-flash"}
             },
         },
     )
     router = ModelRouter(
-        settings, backends={"ollama": BrokenBackend()}, sleeper=lambda _: None
+        settings, backends={"gemini": BrokenBackend()}, sleeper=lambda _: None
     )
 
     chunks, decision = router.stream(
@@ -49,7 +49,7 @@ def test_router_falls_back_to_template(tmp_path: Path) -> None:
     )
 
     response = "".join(chunks)
-    assert "local language model is currently unavailable" in response
+    assert "language service is currently unavailable" in response
     assert decision.backend == "template"
     assert decision.reason.startswith("Template fallback")
 
@@ -60,12 +60,12 @@ def test_router_marks_reset_after_midstream_failure(tmp_path: Path) -> None:
         llm={
             "retries": 0,
             "routes": {
-                "chat_question": {"backend": "ollama", "model": "gemma3:4b"}
+                "chat_question": {"backend": "gemini", "model": "gemini-3.5-flash"}
             },
         },
     )
     router = ModelRouter(
-        settings, backends={"ollama": InterruptedBackend()}, sleeper=lambda _: None
+        settings, backends={"gemini": InterruptedBackend()}, sleeper=lambda _: None
     )
     chunks, decision = router.stream(
         "chat_question", "en", [{"role": "user", "content": "Question"}]
@@ -89,14 +89,14 @@ def test_router_selects_candidate_within_latency_and_memory_limits(
                 "chat_question": {
                     "candidates": [
                         {
-                            "backend": "ollama",
-                            "model": "gemma3:4b",
+                            "backend": "gemini",
+                            "model": "gemini-3.5-flash",
                             "estimated_latency_ms": 10000,
                             "min_available_memory_mb": 2048,
                         },
                         {
-                            "backend": "ollama",
-                            "model": "qwen2.5:1.5b",
+                            "backend": "gemini",
+                            "model": "gemini-3.6-flash",
                             "estimated_latency_ms": 5000,
                             "min_available_memory_mb": 512,
                         },
@@ -117,5 +117,6 @@ def test_router_selects_candidate_within_latency_and_memory_limits(
         "chat_question", "en", latency_budget_ms=6000, available_memory_mb=1024
     )
 
-    assert selected["model"] == "qwen2.5:1.5b"
+    assert selected["model"] == "gemini-3.5-flash"
+    assert "gemini-3.6-flash" in selected["_selection_reason"]
     assert "6000 ms" in selected["_selection_reason"]

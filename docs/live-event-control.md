@@ -75,13 +75,18 @@ Eight seconds of low input audio (configurable in `config/ava.yaml`) or a
 transcribed “thank you” cue only reveals a suggestion. It never finishes a
 speech without operator confirmation. On confirmation, AVA summarizes the
 transcript in 2–3 short sentences; long transcripts use chunk summaries before
-the final summary. The summarizer is instructed to use transcript facts only,
-and validates the requested language and length. Empty/very short transcripts
-produce an explicit “summary could not be generated” message.
+the final summary. `speaker_summary` is routed to Gemini when available, with
+the configured template backend as the resource/service fallback. The summarizer
+is instructed to use transcript facts only and validates the requested language,
+spoken length, and exact 2–3 sentence count. If validation fails, one corrective
+generation is attempted using the transcript (or its chunk summaries), never the
+rejected draft. Empty/very short transcripts produce an explicit “summary could
+not be generated” message.
 
 The generated summary remains editable. **Speak it** uses browser playback;
 **Auto-speak summary** is an explicit opt-in and defaults off. The operator may
-include the summary in the transition to the next eligible schedule item.
+include the summary in the transition to the next eligible schedule item; this
+is enabled by default and can be unchecked for an individual transition.
 Markdown export is built in; PDF and DOCX use ReportLab and python-docx from
 `requirements.txt`.
 

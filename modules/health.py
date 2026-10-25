@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from llm import GeminiRequestError, api_key, model_name
+from llm import GeminiRequestError, api_key, fallback_model_name, model_name
 
 logger = logging.getLogger(__name__)
 
@@ -21,17 +21,21 @@ def check_gemini() -> dict[str, Any]:
         return {
             "available": True,
             "configured": True,
+            "key_set": True,
             "model": selected_model,
+            "fallback_model": fallback_model_name() or None,
             "message": (
-                f"{selected_model} selected; API reachability is verified when a "
-                "generation is requested"
+                f"{selected_model} configured; API reachability is verified by "
+                "the health endpoint's test generation"
             ),
         }
     except GeminiRequestError as exc:
         return {
             "available": False,
             "configured": False,
+            "key_set": False,
             "model": model_name(),
+            "fallback_model": fallback_model_name() or None,
             "message": str(exc),
         }
 

@@ -9,6 +9,7 @@ from services.event_service import (
     EventService,
     blocked_names,
     contains_blocked_name,
+    drop_blocked_name_sentences,
 )
 from modules.tts import SpeechSynthesizer
 
@@ -119,6 +120,14 @@ def test_absence_applies_to_all_future_items_for_same_person(tmp_path: Path) -> 
     assert [
         item["status"] for item in updated["items"] if item["person_name"] == "Dr. Nair"
     ] == ["absent", "absent"]
+
+
+def test_blocked_names_drop_only_sentences_that_mention_them() -> None:
+    output = drop_blocked_name_sentences(
+        "Welcome, everyone. Please welcome Dr. Nair. We will begin with music!",
+        ["Dr. Nair"],
+    )
+    assert output == "Welcome, everyone. We will begin with music!"
 
 
 def test_safe_fallback_removes_absent_name_even_if_in_another_title() -> None:

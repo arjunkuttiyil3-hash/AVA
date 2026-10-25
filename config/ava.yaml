@@ -5,7 +5,8 @@ app:
   log_level: INFO
 
 llm:
-  default_model: gemini-2.5-flash
+  default_model: gemini-3.5-flash
+  fallback_model: gemini-3.6-flash
   timeout_seconds: 60
   retries: 2
   latency_budget_ms: 30000
@@ -14,7 +15,7 @@ llm:
     chat_question:
       candidates:
         - backend: gemini
-          model: gemini-2.5-flash
+          model: gemini-3.5-flash
           estimated_latency_ms: 10000
           min_available_memory_mb: 2048
         - backend: template
@@ -27,7 +28,7 @@ llm:
     story_request:
       candidates:
         - backend: gemini
-          model: gemini-2.5-flash
+          model: gemini-3.5-flash
           estimated_latency_ms: 12000
           min_available_memory_mb: 2048
         - backend: template
@@ -37,7 +38,7 @@ llm:
     story_followup:
       candidates:
         - backend: gemini
-          model: gemini-2.5-flash
+          model: gemini-3.5-flash
           estimated_latency_ms: 12000
           min_available_memory_mb: 2048
         - backend: template
@@ -47,7 +48,7 @@ llm:
     anchoring_script:
       candidates:
         - backend: gemini
-          model: gemini-2.5-flash
+          model: gemini-3.5-flash
           estimated_latency_ms: 10000
           min_available_memory_mb: 2048
         - backend: template
@@ -57,7 +58,7 @@ llm:
     schedule_next:
       candidates:
         - backend: gemini
-          model: gemini-2.5-flash
+          model: gemini-3.5-flash
           estimated_latency_ms: 10000
           min_available_memory_mb: 2048
         - backend: template
@@ -67,7 +68,7 @@ llm:
     intent_classifier:
       candidates:
         - backend: gemini
-          model: gemini-2.5-flash
+          model: gemini-3.5-flash
           estimated_latency_ms: 1000
           min_available_memory_mb: 2048
         - backend: template
@@ -77,13 +78,26 @@ llm:
     conversation_summary:
       candidates:
         - backend: gemini
-          model: gemini-2.5-flash
+          model: gemini-3.5-flash
           estimated_latency_ms: 5000
           min_available_memory_mb: 2048
         - backend: template
           model: template
           estimated_latency_ms: 20
           min_available_memory_mb: 0
+    speaker_summary:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 10000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+      resource_fallback:
+        backend: template
+        model: template
     default:
       backend: template
 

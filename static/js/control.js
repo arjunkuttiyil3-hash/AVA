@@ -22,6 +22,7 @@
   let captureSuppressedItemId = 0;
   let audioUnlocked = false;
   let activeAudio = null;
+  let activeUtterance = null;
   let audioGeneration = 0;
   let silenceSuggestionSeconds = 8;
 
@@ -137,7 +138,7 @@
         actions.append(control);
       };
       if (["pending", "absent"].includes(item.status)) {
-        button("Mark arrived", () => updateItem(item, { status: "arrived" }));
+        button("Arrived", () => updateItem(item, { status: "arrived" }));
       }
       if (!["absent", "removed", "done", "skipped"].includes(item.status)) {
         button("Absent / not coming", () => {
@@ -153,7 +154,7 @@
         button("Skip", () => updateItem(item, { status: "skipped" }));
       }
       button("Edit", () => editItem(item));
-      button("Jump", () => runAction(`/api/live-events/${eventId}/jump/${item.id}`));
+      button("Call now", () => void callNow(item.id), "primary-button");
       button("↑", () => moveItem(index, -1));
       button("↓", () => moveItem(index, 1));
       button("Delete", () => {
@@ -283,9 +284,21 @@
     render(await request(`/api/live-events/${eventId}`));
   }
 
+  async function afterMutation(operation) {
+    const result = await operation();
+    try {
+      await refresh();
+    } catch (error) {
+      const updatedEvent = result?.items ? result : result?.event;
+      if (updatedEvent?.items) render(updatedEvent);
+      throw error;
+    }
+    return result;
+  }
+
   async function runAction(url, action = {}) {
     try {
-      render(await post(url, action));
+      await afterMutation(() => post(url, action));
     } catch (error) {
       notify(error.message);
     }
@@ -293,7 +306,7 @@
 
   async function updateItem(item, changes) {
     try {
-      render(await patch(`/api/event/items/${item.id}`, { event_id: eventId, ...changes }));
+      await afterMutation(() => patch(`/api/event/items/${item.id}`, { event_id: eventId, ...changes }));
     } catch (error) {
       notify(error.message);
     }
@@ -301,7 +314,7 @@
 
   async function removeItem(item) {
     try {
-      render(await request(`/api/event/items/${item.id}?event_id=${eventId}`, { method: "DELETE" }));
+      await afterMutation(() => request(`/api/event/items/${item.id}?event_id=${eventId}`, { method: "DELETE" }));
     } catch (error) {
       notify(error.message);
     }
@@ -313,7 +326,7 @@
     const order = eventState.items.map((item) => item.id);
     [order[index], order[target]] = [order[target], order[index]];
     try {
-      render(await post("/api/event/reorder", { event_id: eventId, item_ids: order }));
+      await afterMutation(() => post("/api/event/reorder", { event_id: eventId, item_ids: order }));
     } catch (error) {
       notify(error.message);
     }
@@ -347,23 +360,75 @@
   async function playUrl(url) {
     if (!audioUnlocked) {
       notify("Enable audio first, then press Speak it again.");
-      return;
+      return false;
     }
     stopBrowserAudio();
     activeAudio = new Audio(url);
     try {
       await activeAudio.play();
+      return true;
     } catch {
       notify("Audio could not play in this browser.");
+      return false;
     }
   }
 
   function stopBrowserAudio() {
     audioGeneration += 1;
+    window.speechSynthesis?.cancel();
+    activeUtterance = null;
     if (activeAudio) {
       activeAudio.pause();
       activeAudio.currentTime = 0;
       activeAudio = null;
+    }
+  }
+
+  function speakFallback(text, language) {
+    if (!("speechSynthesis" in window) || !text) return false;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = language === "ml" ? "ml-IN" : "en-IN";
+    activeUtterance = utterance;
+    utterance.addEventListener("end", () => {
+      if (activeUtterance === utterance) activeUtterance = null;
+    }, { once: true });
+    utterance.addEventListener("error", () => {
+      if (activeUtterance === utterance) activeUtterance = null;
+      notify("Browser speech could not play this announcement.");
+    }, { once: true });
+    window.speechSynthesis.speak(utterance);
+    return true;
+  }
+
+  async function callNow(itemId = null) {
+    if (!eventId) {
+      notify("Set up an event before calling a schedule item.");
+      return;
+    }
+    stopBrowserAudio();
+    const generation = audioGeneration;
+    try {
+      try {
+        await unlockAudio();
+      } catch {
+        notify("Audio unlock failed; trying browser speech after the announcement is prepared.");
+      }
+      const result = await afterMutation(() => post(
+        `/api/live-events/${eventId}/call-now`,
+        {
+          ...(itemId === null ? {} : { item_id: itemId }),
+          include_summary: $("#include-transition").checked,
+        },
+      ));
+      if (generation !== audioGeneration) return;
+      if (result.notice) notify(result.notice);
+      const played = result.audio_url ? await playUrl(result.audio_url) : false;
+      if (!played && !speakFallback(result.text, result.event.language)) {
+        notify(result.text || "The announcement is ready, but no speech output is available.");
+      }
+    } catch (error) {
+      notify(error.message);
     }
   }
 
@@ -389,12 +454,10 @@
     body.append("audio", blob, "speech-segment.webm");
     body.append("language", item.transcript_language || "auto");
     try {
-      const response = await fetch(`/api/live-events/${eventId}/items/${item.id}/capture`, {
-        method: "POST",
-        body,
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.detail || "Could not transcribe this segment.");
+      const result = await afterMutation(() => request(
+        `/api/live-events/${eventId}/items/${item.id}/capture`,
+        { method: "POST", body },
+      ));
       if (result.text) {
         $("#transcript-editor").value = `${$("#transcript-editor").value} ${result.text}`.trim();
         if (/thank you|നന്ദി/i.test(result.text)) $("#silence-suggestion").hidden = false;
@@ -475,17 +538,16 @@
   async function persistTranscript() {
     const item = currentItem();
     if (!item) throw new Error("Choose an active schedule item first.");
-    const result = await request(`/api/live-events/${eventId}/items/${item.id}/transcript`, {
+    await afterMutation(() => request(`/api/live-events/${eventId}/items/${item.id}/transcript`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: $("#transcript-editor").value }),
-    });
-    render(result);
+    }));
   }
 
   $("#save-event-fields").addEventListener("click", async () => {
     try {
-      render(await patch(`/api/live-events/${eventId}`, {
+      await afterMutation(() => patch(`/api/live-events/${eventId}`, {
         name: $("#field-name").value,
         type: $("#field-type").value,
         date: $("#field-date").value,
@@ -504,25 +566,7 @@
     if (window.confirm("End this event?")) void runAction(`/api/live-events/${eventId}/end`);
   });
   $("#previous-item").addEventListener("click", () => runAction(`/api/live-events/${eventId}/previous`));
-  $("#next-item").addEventListener("click", () => {
-    const item = currentItem();
-    if ($("#include-transition").checked && item?.type === "speech" && item.summary) {
-      void (async () => {
-        try {
-          const generation = audioGeneration;
-          const { transition } = await request(`/api/live-events/${eventId}/replan`);
-          render(await post(`/api/live-events/${eventId}/next`));
-          const audio = await post(`/api/live-events/${eventId}/announcement`, { text: transition, polish: false });
-          if (generation !== audioGeneration) return;
-          await playUrl(audio.url);
-        } catch (error) {
-          notify(error.message);
-        }
-      })();
-    } else {
-      void runAction(`/api/live-events/${eventId}/next`);
-    }
-  });
+  $("#next-item").addEventListener("click", () => void callNow());
   $("#undo-change").addEventListener("click", () => {
     if (window.confirm("Undo the most recent live event change?")) {
       void runAction(`/api/live-events/${eventId}/undo`);
@@ -539,7 +583,8 @@
   });
   $("#add-item-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const rawPosition = String(data.get("position") || "").trim();
     const item = {
       event_id: eventId,
@@ -552,8 +597,8 @@
     };
     if (rawPosition) item.position = Number(rawPosition) - 1;
     try {
-      render(await post("/api/event/items", item));
-      event.currentTarget.reset();
+      await afterMutation(() => post("/api/event/items", item));
+      form.reset();
     } catch (error) {
       notify(error.message);
     }
@@ -587,7 +632,7 @@
       const result = await post(`/api/live-events/${eventId}/items/${item.id}/finish`, {
         language: eventState.language,
       });
-      render(result.event);
+      await refresh();
       $("#summary-editor").value = result.summary;
       notify("Summary ready for operator review.");
       if ($("#auto-speak-summary").checked) {
@@ -602,11 +647,10 @@
     const item = currentItem();
     if (!item) return notify("Choose a speaker item.");
     try {
-      const result = await patch(`/api/event/items/${item.id}`, {
+      await afterMutation(() => patch(`/api/event/items/${item.id}`, {
         event_id: eventId,
         summary: $("#summary-editor").value,
-      });
-      render(result);
+      }));
       notify("Summary edits saved.");
     } catch (error) {
       notify(error.message);
@@ -619,7 +663,7 @@
       const result = await post(`/api/live-events/${eventId}/items/${item.id}/summary`, {
         language: eventState.language,
       });
-      render(result.event);
+      await refresh();
       $("#summary-editor").value = result.summary;
     } catch (error) {
       notify(error.message);
@@ -629,7 +673,7 @@
     const item = currentItem();
     if (!item || !window.confirm("Discard this speaker summary?")) return;
     try {
-      render(await patch(`/api/event/items/${item.id}`, { event_id: eventId, summary: "" }));
+      await afterMutation(() => patch(`/api/event/items/${item.id}`, { event_id: eventId, summary: "" }));
       $("#summary-editor").value = "";
     } catch (error) {
       notify(error.message);

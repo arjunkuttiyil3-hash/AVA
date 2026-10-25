@@ -1,4 +1,4 @@
-"""Config-driven model selection with retryable local and template backends."""
+"""Config-driven Gemini model selection and deterministic template fallback."""
 
 from __future__ import annotations
 
@@ -197,7 +197,7 @@ class ModelRouter:
             )
             return f"{prior} Earlier conversation: {latest}"[-1800:]
         return (
-            "local language model is currently unavailable. "
+            "language service is currently unavailable. "
             "I’m here to help. Please try again shortly."
         )
 

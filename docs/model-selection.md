@@ -3,18 +3,18 @@
 `ModelRouter` selects a route by task and language from `config/ava.yaml`.
 Each task can provide ordered candidates with an estimated latency and a minimum
 available-memory requirement; `llm.latency_budget_ms` bounds candidate selection.
-Ollama's Python client streams `gemma3:4b` by default when its candidate meets
-those configured constraints. Intent classification passes a JSON Schema to
-Ollama's structured-output `format` field. Model failures are logged and retried
-with exponential backoff; a configured alternate backend may be used before the
-deterministic template fallback.
+AVA uses the official asynchronous `google-genai` client for all language-model
+calls. Set `GEMINI_API_KEY` and `GEMINI_MODEL` in the project-root `.env`; the
+default primary model is `gemini-3.5-flash`. Optionally set
+`GEMINI_FALLBACK_MODEL` (default `gemini-3.6-flash`). AVA retries transient 429
+and 5xx responses, then tries the fallback after 404, 429, timeout, or 5xx
+errors, and uses deterministic
+templates if the configured models cannot complete the request. Structured
+intent classification sends its JSON schema through Gemini's response
+configuration.
 
-Gemini is optional. Install the declared `google-genai` dependency, set
-`GEMINI_API_KEY` in `.env`, then configure a Gemini route or route fallback. No
-key is required for the local Ollama setup. The application does not send
-requests to Gemini unless the YAML route selects it.
-
-Select a smaller local model when memory or latency is constrained and test
-Malayalam output separately. AVA shows its selected and final backend/model and
-measured end-to-end response time in the browser. Template fallback is
-deliberately disclosed; it is not presented as model-generated content.
+Model candidates and resource/latency limits remain configured in
+`config/ava.yaml`. AVA shows the routed model/backend and measured end-to-end
+response time in the browser. Template fallback is deliberately disclosed; it
+is not presented as model-generated content. Test Malayalam output separately
+for natural spoken phrasing and script.

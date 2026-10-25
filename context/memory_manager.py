@@ -115,9 +115,15 @@ class MemoryManager:
             chunks.append(
                 ("system", f"Relevant older message ({snippet['role']}): {snippet['content']}")
             )
+        prior_message_limit = max(self.short_term_turns - 1, 0)
+        recent_messages = (
+            context.recent[-prior_message_limit:]
+            if prior_message_limit
+            else []
+        )
         chunks.extend(
             (message["role"], message["content"])
-            for message in context.recent[-self.short_term_turns * 2 :]
+            for message in recent_messages
         )
         chunks.append(("user", latest_message))
 

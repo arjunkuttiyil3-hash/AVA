@@ -18,15 +18,14 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 Copy-Item .env.example .env
-# Set GEMINI_API_KEY in .env
+# Set GEMINI_API_KEY and, optionally, GEMINI_MODEL and GEMINI_FALLBACK_MODEL in .env
 python scripts/check_env.py
-python run.py
+python app.py
 ```
 
 Open <http://127.0.0.1:8000>. `python run.py --host 127.0.0.1 --port 8000`
-overrides the configured bind address. The launcher serves the modular
-Gemini-backed API (`interface.api:app`); the legacy single-file prototype in
-`app.py` is not the production entry point. The app defaults to a simulated robot
+overrides the configured bind address. Both launchers serve the same modular
+Gemini-backed API (`interface.api:app`). The app defaults to a simulated robot
 and text chat remains available if a microphone or speech service is absent.
 The first Faster-Whisper or offline Malayalam TTS use may download a model.
 
@@ -77,7 +76,8 @@ Blank sample values are ignored.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `llm.default_model` | `gemini-2.5-flash` | Gemini model identifier |
+| `llm.default_model` / `GEMINI_MODEL` | `gemini-3.5-flash` | Primary Gemini model identifier |
+| `GEMINI_FALLBACK_MODEL` | `gemini-3.6-flash` | Optional Gemini model tried after primary model errors |
 | `llm.timeout_seconds`, `llm.retries` | `60`, `2` | Per-attempt timeout and retry count |
 | `llm.latency_budget_ms`, route candidates | `30000`, per-model estimates | Select a candidate by estimated latency and minimum available memory |
 | `llm.routes` | task mappings | Select backend/model, optionally fallback and per-language routes |
@@ -88,14 +88,17 @@ Blank sample values are ignored.
 | `speech.voices` | en-IN-Neerja / ml-IN-Sobhana | Edge TTS voice IDs; Malayalam Midhun is also available |
 | `speech.cache_dir` | `audio/cache` | Content-hash audio cache, relative to the project |
 | `memory.database_path` | `database/ava.db` | Persistent SQLite file |
-| `memory.short_term_turns` | `12` | Recent turns included in the prompt |
+| `memory.short_term_turns` | `12` | Maximum recent conversation messages included in each generation prompt, including the current request |
 | `memory.retrieval_limit` | `5` | Older FTS5 snippets |
 | `memory.token_budget` | `4096` | Approximate prompt budget |
 | `robot.mode` | `simulated` | `simulated` or `serial` |
 | `robot.serial_port`, `robot.baud_rate` | empty, `115200` | Hardware connection settings |
 
 Supported environment overrides: `AVA_CONFIG_PATH`, `AVA_DB_PATH`, `AVA_HOST`,
-`AVA_PORT`, `AVA_LOG_LEVEL`, `GEMINI_API_KEY`, and `GEMINI_MODEL`. Do not expose the
+`AVA_PORT`, `AVA_LOG_LEVEL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and
+`GEMINI_FALLBACK_MODEL`. `/api/health` checks API-key presence, performs a tiny
+Gemini generation, synthesizes a short TTS sample, and checks SQLite. Results are
+cached for five minutes; `?refresh=true` forces a new check. Do not expose the
 development server to an untrusted network: authentication and multi-user
 authorization are not included.
 
@@ -109,7 +112,12 @@ recency. See [context management](./docs/context-management.md).
 Story state stores title, characters, setting, plot summary, last paragraph, and
 status. Anchoring events retain guest, tone, schedule, and current item index.
 Malayalam replies are requested in Malayalam script; TTS cleanup removes
-markdown and pictographs before synthesis.
+markdown and pictographs before synthesis. After clicking **Enable audio**,
+completed response sentences are synthesized with Edge TTS (Neerja for English,
+Sobhana for Malayalam) and their MP3 bytes are sent as base64 WebSocket events.
+The browser plays sentences in order; if server-side speech synthesis or MP3
+playback fails, browser `speechSynthesis` is used when available. **Stop**
+cancels current browser playback and signals the active response stream to stop.
 
 ## Live event control and speaker summaries
 
@@ -132,10 +140,12 @@ markdown and pictographs before synthesis.
    recognition accuracy; edit them in the transcript field or paste notes when
    capture is unavailable. Silence and “thank you” cues only suggest a finish;
    the operator must confirm **Speech finished**.
-5. AVA creates a transcript-grounded 2–3 sentence summary. Review/edit,
-   regenerate, discard, or explicitly speak it. Auto-speak is off by default.
+5. AVA routes transcript-grounded summaries to Gemini when available, then
+   checks that they contain 2–3 short sentences in the event language. Review/edit,
+   regenerate, discard, or explicitly speak the result. Auto-speak is off by default.
    Summary playback and operator announcements use the session's saved voice.
-   The optional transition includes the reviewed summary and next eligible item.
+   The next transition includes the reviewed summary by default; the operator can
+   opt out with the transition checkbox.
    Event reports are downloadable as Markdown, PDF, or DOCX.
 
 The console API is implemented by `EventService`; REST and WebSocket routes
@@ -159,9 +169,10 @@ services; it does not require a live Gemini request or physical microphone.
 ## Troubleshooting
 
 - **Gemini request fails:** check that `.env` contains a valid `GEMINI_API_KEY`
-  and that `GEMINI_MODEL` names a model available to the key. The startup check
-  verifies key configuration but deliberately does not make a billable API call;
-  API reachability is confirmed by the first generation request.
+  and that `GEMINI_MODEL` names a model available to the key. Set
+  `GEMINI_FALLBACK_MODEL` to a second available model if desired. Startup checks
+  key configuration; `/api/health` performs a small, billable generation and a
+  TTS sample check, with results cached for five minutes.
 - **Microphone permission/device error:** allow the browser and host OS to use the
   microphone. Keep using the text composer if audio capture is unavailable.
 - **Recognition fails on first use:** Faster-Whisper downloads the selected model

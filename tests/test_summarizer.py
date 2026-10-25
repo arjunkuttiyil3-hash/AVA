@@ -21,6 +21,22 @@ class SummaryRouter:
         return [self.response], None
 
 
+class SequenceSummaryRouter:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = iter(responses)
+        self.prompts: list[str] = []
+
+    def stream(
+        self,
+        task: str,
+        language: str,
+        messages: list[dict[str, str]],
+    ) -> tuple[list[str], Any]:
+        _ = (task, language)
+        self.prompts.append(messages[-1]["content"])
+        return [next(self.responses)], None
+
+
 def test_summarizer_uses_transcript_and_returns_short_summary() -> None:
     router = SummaryRouter(
         "The speaker described a school garden project and its weekly student teams. "
@@ -36,6 +52,30 @@ def test_summarizer_uses_transcript_and_returns_short_summary() -> None:
     assert "garden project" in result
     assert "native seeds" in result
     assert "Do not invent" in router.prompts[0]
+
+
+def test_summarizer_retries_invalid_sentence_count_from_transcript_only() -> None:
+    transcript = (
+        "The speaker described the school garden project. "
+        "Students will plant native seeds next week."
+    )
+    rejected = (
+        "The speaker described a school garden project. Students will plant native seeds. "
+        "The project will improve attendance. It will receive new funding."
+    )
+    accepted = (
+        "The speaker described the school garden project. "
+        "Students will plant native seeds next week."
+    )
+    router = SequenceSummaryRouter([rejected, accepted])
+
+    result = SpeakerSummarizer(router).summarize(transcript, language="en")
+
+    assert result == accepted
+    assert len(router.prompts) == 2
+    assert transcript in router.prompts[1]
+    assert rejected not in router.prompts[1]
+    assert "sentence_count" in router.prompts[1]
 
 
 def test_empty_or_short_transcript_returns_explicit_notice() -> None:

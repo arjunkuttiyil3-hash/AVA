@@ -627,6 +627,46 @@ class EventService:
             gratitude = f"Thank you, {speaker}, for those insights on {topic}. "
         return f"{gratitude}Let us now move to {next_item['title']}.{presentation}."
 
+    @staticmethod
+    def build_call_now_template(
+        event: dict[str, Any],
+        previous_item: dict[str, Any] | None,
+        current_item: dict[str, Any],
+        *,
+        include_summary: bool = True,
+    ) -> str:
+        """Create a short stage announcement from the live current and prior items."""
+        language = event.get("language", "en")
+        gratitude = ""
+        if previous_item and previous_item.get("type") == "speech":
+            speaker = str(previous_item.get("person_name") or "").strip()
+            summary = str(previous_item.get("summary") or "").strip()
+            topic = summary.split(".")[0].strip() if include_summary and summary else ""
+            if language == "ml":
+                speaker_text = f"{speaker}ന്" if speaker else "നമ്മുടെ പ്രഭാഷകന്"
+                gratitude = (
+                    f"{topic} പങ്കുവെച്ചതിന് {speaker_text} നന്ദി. "
+                    if topic
+                    else f"പ്രഭാഷണത്തിന് {speaker_text} നന്ദി. "
+                )
+            else:
+                speaker_text = speaker or "our speaker"
+                gratitude = (
+                    f"Thank you, {speaker_text}, for sharing insights on {topic}. "
+                    if topic
+                    else f"Thank you, {speaker_text}, for sharing your thoughts with us. "
+                )
+
+        title = str(current_item.get("title") or "").strip()
+        person = str(current_item.get("person_name") or "").strip()
+        designation = str(current_item.get("designation") or "").strip()
+        introduction = " ".join(part for part in (designation, person) if part)
+        if language == "ml":
+            welcome = f"{introduction}നെ സ്വാഗതം ചെയ്യുന്നു. " if person else ""
+            return f"{gratitude}ഇനി {title}ലേക്ക് കടക്കാം. {welcome}".strip()
+        welcome = f" Please welcome {introduction}." if person else ""
+        return f"{gratitude}We now move to {title}.{welcome}".strip()
+
     def export_markdown(self, event_id: int) -> str:
         """Build a full Markdown event report from the authoritative live state."""
         event = self.get_event(event_id)
@@ -776,6 +816,25 @@ def contains_blocked_name(text: str, names: list[str]) -> str | None:
         if re.search(pattern, text, re.IGNORECASE):
             return name
     return None
+
+
+def drop_blocked_name_sentences(text: str, names: list[str]) -> str:
+    """Remove complete sentences that mention any absent, removed, or skipped person."""
+    if not names:
+        return text.strip()
+    protected_text = re.sub(
+        r"\b(Dr|Mr|Mrs|Ms|Prof)\.(?=\s)",
+        r"\1<AVA_ABBREVIATION_DOT>",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+    sentences = re.split(r"(?<=[.!?।])\s+|\r?\n+", protected_text)
+    kept: list[str] = []
+    for sentence in sentences:
+        restored = sentence.replace("<AVA_ABBREVIATION_DOT>", ".").strip()
+        if restored and contains_blocked_name(restored, names) is None:
+            kept.append(restored)
+    return " ".join(kept)
 
 
 def parse_operator_command(message: str, event: dict[str, Any]) -> dict[str, Any] | None:
