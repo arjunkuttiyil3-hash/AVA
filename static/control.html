@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1020">
+  <title>AVA — Live event control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manjari:wght@400;700&family=Noto+Sans+Malayalam:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/ava.css">
+  <link rel="stylesheet" href="/static/css/control.css">
+  <script src="/static/js/control.js" defer></script>
+</head>
+<body class="control-body">
+  <main class="control-shell">
+    <header class="control-header">
+      <div>
+        <a class="control-back" href="/">← Back to AVA</a>
+        <span class="panel-kicker">OPERATOR CONSOLE</span>
+        <h1>Live event control</h1>
+        <p>Changes apply to AVA immediately. Absent, skipped, and removed people are excluded from upcoming announcements.</p>
+      </div>
+      <div class="control-header-actions">
+        <span id="socket-state" class="socket-state">Connecting…</span>
+        <button id="audio-unlock" class="audio-unlock" type="button">Enable audio</button>
+        <button id="stop-speaking" class="danger-button" type="button">■ AVA stop speaking</button>
+      </div>
+    </header>
+
+    <section id="empty-state" class="control-card empty-control" hidden>
+      <h2>No event is set up for this session</h2>
+      <p>Return to AVA, open Anchoring, and save an event with its schedule first.</p>
+      <a class="primary-link" href="/">Open AVA anchoring setup</a>
+    </section>
+
+    <div id="control-content" class="control-grid" hidden>
+      <section class="control-main">
+        <section class="control-card event-overview">
+          <div class="control-card-heading">
+            <div><span class="panel-kicker">LIVE OVERVIEW</span><h2 id="event-title">Event</h2></div>
+            <span id="event-status" class="event-status">Not started</span>
+          </div>
+          <div class="progress-copy"><span id="progress-label">0 of 0 items</span><span id="version-label">Version 1</span></div>
+          <div class="progress-track"><div id="progress-bar"></div></div>
+          <div class="event-fields-control">
+            <label>Event name<input id="field-name" maxlength="200"></label>
+            <label>Type<input id="field-type" maxlength="80"></label>
+            <label>Date<input id="field-date" type="date"></label>
+            <label>Venue<input id="field-venue" maxlength="200"></label>
+            <label>Tone<select id="field-tone"><option>Professional</option><option>Energetic</option><option>Youthful</option><option>Elegant</option><option>Formal</option><option>Funny</option></select></label>
+            <label>Language<select id="field-language"><option value="en">English</option><option value="ml">മലയാളം</option></select></label>
+            <label class="wide-field">Chief guest<input id="field-chief-guest" maxlength="200"></label>
+          </div>
+          <button id="save-event-fields" class="secondary-button" type="button">Save event details</button>
+          <div class="event-controls">
+            <button id="start-event" class="primary-button" type="button">Start event</button>
+            <button id="pause-event" class="secondary-button" type="button">Pause</button>
+            <button id="previous-item" class="secondary-button" type="button">← Previous</button>
+            <button id="next-item" class="primary-button" type="button">Next item →</button>
+            <button id="end-event" class="danger-button" type="button">End event</button>
+            <button id="undo-change" class="secondary-button" type="button">↶ Undo last change</button>
+          </div>
+        </section>
+
+        <section class="control-card">
+          <div class="control-card-heading">
+            <div><span class="panel-kicker">LIVE SCHEDULE</span><h2>Program and attendance</h2></div>
+            <span id="schedule-count" class="muted-label"></span>
+          </div>
+          <div id="schedule-list" class="schedule-list"></div>
+          <form id="add-item-form" class="add-item-form">
+            <h3>Add schedule item / late arrival</h3>
+            <label>Title<input name="title" required maxlength="200" placeholder="e.g. Guest address"></label>
+            <div class="form-two">
+              <label>Type<select name="type"><option value="speech">Speech</option><option value="welcome">Welcome</option><option value="performance">Performance</option><option value="break">Break</option><option value="vote_of_thanks">Vote of thanks</option><option value="other">Other</option></select></label>
+              <label>Insert at position<input name="position" type="number" min="1" placeholder="End of schedule"></label>
+            </div>
+            <div class="form-two">
+              <label>Person / speaker<input name="person_name" maxlength="160"></label>
+              <label>Designation<input name="designation" maxlength="160"></label>
+            </div>
+            <div class="form-two">
+              <label>Duration (minutes)<input name="planned_duration" type="number" min="0" max="600" value="0"></label>
+              <label>Transcript language<select name="transcript_language"><option value="auto">Auto</option><option value="en">English</option><option value="ml">Malayalam</option></select></label>
+            </div>
+            <button class="secondary-button" type="submit">＋ Add item</button>
+          </form>
+        </section>
+
+        <section class="control-card speech-card">
+          <div class="control-card-heading">
+            <div><span class="panel-kicker">SPEAKER CAPTURE</span><h2>Speech notes and summary</h2></div>
+            <span id="capture-state" class="muted-label">Capture starts when a speech goes on stage</span>
+          </div>
+          <div class="capture-actions">
+            <button id="capture-toggle" class="secondary-button" type="button">Start / resume capture</button>
+            <button id="speech-finished" class="primary-button" type="button">Speech finished</button>
+          </div>
+          <p id="silence-suggestion" class="silence-suggestion" hidden>Long silence detected. Confirm with “Speech finished” when the speaker is done.</p>
+          <label>Editable transcript<textarea id="transcript-editor" rows="6" placeholder="Live transcript segments appear here. You can also paste notes if the microphone is unavailable."></textarea></label>
+          <div class="transcript-actions">
+            <button id="save-transcript" class="secondary-button" type="button">Save transcript edits</button>
+            <label class="transition-toggle"><input id="include-transition" type="checkbox"> Include summary in next transition</label>
+          </div>
+          <div class="summary-box">
+            <label>Editable speaker summary<textarea id="summary-editor" rows="4" placeholder="Approve or edit the generated summary before AVA speaks it."></textarea></label>
+            <div class="summary-actions">
+              <button id="speak-summary" class="secondary-button" type="button">▶ Speak it</button>
+              <button id="save-summary" class="secondary-button" type="button">Save edits</button>
+              <button id="regenerate-summary" class="secondary-button" type="button">Regenerate</button>
+              <button id="discard-summary" class="danger-button" type="button">Discard</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-card">
+          <div class="control-card-heading">
+            <div><span class="panel-kicker">QUICK DELIVERY</span><h2>Operator announcement</h2></div>
+          </div>
+          <label>Text for AVA<textarea id="announcement-text" rows="3" maxlength="2000" placeholder="Type the announcement AVA should deliver…"></textarea></label>
+          <div class="announcement-actions">
+            <label class="transition-toggle"><input id="polish-announcement" type="checkbox"> Polish before speaking</label>
+            <button id="deliver-announcement" class="primary-button" type="button">Speak announcement</button>
+          </div>
+        </section>
+      </section>
+
+      <aside class="control-side">
+        <section class="control-card">
+          <div class="control-card-heading"><div><span class="panel-kicker">EVENT REPORT</span><h2>Export</h2></div></div>
+          <div class="export-actions">
+            <a id="export-md" class="secondary-button" href="#">Markdown</a>
+            <a id="export-pdf" class="secondary-button" href="#">PDF</a>
+            <a id="export-docx" class="secondary-button" href="#">DOCX</a>
+          </div>
+          <label class="transition-toggle auto-speak"><input id="auto-speak-summary" type="checkbox"> Auto-speak summary (off by default)</label>
+        </section>
+        <section class="control-card">
+          <div class="control-card-heading"><div><span class="panel-kicker">SPEECH SUMMARIES</span><h2>Speaker recap</h2></div></div>
+          <div id="summary-list" class="summary-list"><p class="muted-label">Summaries appear after a speech is finished.</p></div>
+        </section>
+        <section class="control-card">
+          <div class="control-card-heading"><div><span class="panel-kicker">AUDIT TRAIL</span><h2>Recent changes</h2></div></div>
+          <ol id="event-log" class="event-log"></ol>
+        </section>
+      </aside>
+    </div>
+    <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
+  </main>
+</body>
+</html>

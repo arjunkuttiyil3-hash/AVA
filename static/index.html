@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1020">
+  <title>AVA — Your voice on stage</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manjari:wght@400;700&family=Noto+Sans+Malayalam:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/ava.css">
+  <script src="/static/js/ava.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="AVA workspace">
+      <div class="sidebar-brand-row">
+        <a class="brand" href="/" aria-label="AVA home"><span class="brand-mark">A</span><span>ava<span class="brand-dot">.</span></span></a>
+        <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">⇤</button>
+      </div>
+      <div class="sidebar-label">WORKSPACE</div>
+      <div class="session-card">
+        <span class="live-dot connecting" id="session-dot" aria-hidden="true"></span>
+        <div><strong>Live session</strong><small id="session-short">Connecting…</small></div>
+        <button class="icon-button" id="new-session" aria-label="Start a new session" title="New session">＋</button>
+      </div>
+      <nav class="side-navigation" aria-label="Workspace navigation">
+        <span class="sidebar-label">WORKSPACE</span>
+        <button class="side-link active" data-nav="overview"><span>◉</span> Overview</button>
+        <button class="side-link" data-nav="anchoring"><span>✦</span> Anchoring Studio</button>
+        <button class="side-link" data-nav="chat"><span>◌</span> AI Conversation</button>
+        <button class="side-link" data-nav="voice"><span>♫</span> Voice &amp; Language</button>
+        <button class="side-link" data-nav="robot"><span>◇</span> Robot Control <small>Simulator</small></button>
+        <button class="side-link" data-nav="memory"><span>✳</span> Memory &amp; Context</button>
+        <button class="side-link" data-nav="diagnostics"><span>⌁</span> System Diagnostics</button>
+        <span class="sidebar-label secondary-label">MORE</span>
+        <button class="side-link unavailable" type="button" disabled aria-describedby="history-status"><span>◷</span> Session History <small id="history-status">Coming soon</small></button>
+      </nav>
+      <section class="memory-card" aria-labelledby="memory-title">
+        <div class="card-heading"><span id="memory-title">Your memory</span><span class="memory-icon">✳</span></div>
+        <p id="memory-copy">Your conversation context will appear here.</p>
+        <div class="memory-meta"><span id="memory-count">0 messages</span><span>SQLite · on device</span></div>
+      </section>
+      <section class="state-card" aria-labelledby="state-title">
+        <div class="sidebar-label" id="state-title">ACTIVE CONTEXT</div>
+        <div class="state-content" id="active-state"><span class="state-empty">No story or event yet</span></div>
+      </section>
+      <div class="sidebar-bottom">
+        <button class="settings-link" id="open-settings"><span>⚙</span> Settings</button>
+        <div class="profile"><div class="profile-avatar">A</div>        <div><strong>AVA assistant</strong><small>Gemini · private memory</small></div><span class="profile-status" id="connection-dot"></span></div>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div><span class="topbar-kicker">AI VIRTUAL ANCHORING ASSISTANT</span><h1>Your voice on stage.</h1></div>
+        <div class="topbar-actions">
+          <a class="audio-unlock" href="/control">Live event control</a>
+          <span class="provider-pill checking" id="provider-status" role="status">Gemini · checking</span>
+          <label class="sr-only" for="language-select">Response language</label>
+          <select id="language-select" class="language-select" aria-label="Response language">
+            <option value="en">EN · English</option><option value="ml">മലയാളം</option>
+          </select>
+          <button id="enable-audio" class="audio-unlock" type="button">Enable audio</button>
+          <button id="theme-status" class="connection-pill connecting" type="button" aria-live="polite" title="Connection status"><span class="status-indicator"></span><span id="connection-label">Connecting</span></button>
+        </div>
+      </header>
+      <section id="health-banner" class="health-banner" role="alert" aria-live="polite" hidden>
+        <strong>Some AVA services need attention</strong>
+        <ul id="health-details"></ul>
+      </section>
+      <details class="diagnostics-panel" id="diagnostics-panel">
+        <summary><span>System diagnostics</span><small>Live service checks</small></summary>
+        <div id="diagnostics-list" class="diagnostics-list" aria-live="polite"></div>
+      </details>
+
+      <nav class="mode-tabs" aria-label="Conversation mode">
+        <button class="mode-tab active" data-mode="chat" aria-pressed="true"><span>◌</span> Chat</button>
+        <button class="mode-tab" data-mode="story" aria-pressed="false"><span>✧</span> Story</button>
+        <button class="mode-tab" data-mode="anchoring" aria-pressed="false"><span>▤</span> Anchoring</button>
+        <span class="mode-hint" id="mode-hint">Ask anything, in either language</span>
+      </nav>
+
+      <section class="studio-view" id="anchoring-studio" aria-labelledby="studio-title" hidden>
+        <div class="studio-heading">
+          <div><span class="panel-kicker">LIVE ANCHORING STUDIO</span><h2 id="studio-title">Shape the next moment.</h2><p>Build and revise a spoken script while keeping the live event schedule in view.</p></div>
+          <span class="studio-draft-state" id="studio-draft-state" role="status">Draft not saved</span>
+        </div>
+        <div class="studio-grid">
+          <div class="studio-editor">
+            <form id="studio-form" class="studio-card">
+              <div class="studio-card-heading"><div><span class="panel-kicker">SCRIPT BRIEF</span><h3>Give AVA the details</h3></div><span class="step-mark">01</span></div>
+              <div class="studio-fields">
+                <label>Event / program title<input name="title" maxlength="160" placeholder="e.g. TechVista 2026"></label>
+                <label>Event format<select name="event_type"><option>College Event</option><option>Tech Fest</option><option>News</option><option>Interview</option><option>Seminar</option><option>Product Launch</option><option>Cultural Program</option><option>Custom</option></select></label>
+                <label>Audience<input name="audience" maxlength="120" placeholder="Students, faculty, and guests"></label>
+                <label>Presenter style<select name="style"><option>Warm and confident</option><option>Professional host</option><option>Energetic presenter</option><option>Elegant and formal</option></select></label>
+                <label>Tone<select name="tone"><option>Professional</option><option>Energetic</option><option>Friendly</option><option>Formal</option><option>Dramatic</option></select></label>
+                <label>Topic<input name="topic" maxlength="180" placeholder="What is this segment about?"></label>
+                <label class="field-wide">Key points<textarea name="key_points" rows="3" maxlength="1200" placeholder="Facts and moments AVA should cover"></textarea></label>
+                <label class="field-wide">Names and designations<textarea name="names" rows="2" maxlength="800" placeholder="Use only confirmed names"></textarea></label>
+                <label class="field-wide">Additional instructions<textarea name="instructions" rows="2" maxlength="800" placeholder="Timing, pronunciation, pronunciation notes…"></textarea></label>
+              </div>
+              <div class="studio-actions">
+                <button class="secondary-action" id="studio-save-draft" type="button">Save draft</button>
+                <button class="primary-action" type="submit">✦ Generate script</button>
+              </div>
+              <p class="studio-note">Script generation uses the configured Gemini route and streams into this editor. AVA speaks only after you select a segment; enable browser audio first.</p>
+            </form>
+
+            <section class="studio-card script-card" aria-labelledby="script-editor-title">
+              <div class="studio-card-heading"><div><span class="panel-kicker">EDITABLE SCRIPT</span><h3 id="script-editor-title">Your segments</h3></div><div class="script-metrics"><span id="script-word-count">0 words</span><span id="script-character-count">0 characters</span></div></div>
+              <div id="script-sections" class="script-sections"></div>
+              <div class="script-toolbar">
+                <button class="text-action" id="add-script-section" type="button">＋ Add section</button>
+                <button class="text-action" id="preview-script" type="button">Preview full script</button>
+                <button class="text-action" id="reset-script" type="button">Reset draft</button>
+              </div>
+              <div class="studio-actions segment-actions">
+                <button class="secondary-action" id="regenerate-section" type="button">Regenerate selected</button>
+                <button class="primary-action" id="speak-section" type="button">Speak selected segment</button>
+              </div>
+              <p class="studio-note" id="studio-playback-note">Future segments are editable drafts; queued playback control is not available in the current backend.</p>
+            </section>
+          </div>
+
+          <aside class="studio-sidebar">
+            <section class="studio-card preview-card">
+              <div class="studio-card-heading"><div><span class="panel-kicker">LIVE OUTPUT PREVIEW</span><h3>Ready for the room</h3></div><span class="live-pill"><i></i> PREVIEW</span></div>
+              <div id="active-segment-preview" class="active-segment-preview">Select a script segment to preview it here.</div>
+              <div class="preview-meta"><span id="preview-duration">Estimated time · —</span><span id="preview-language">English</span></div>
+              <div class="queue-notice"><strong>Playback queue</strong><span>AVA speaks a segment only when you choose “Speak selected”. The current service does not expose a queued script API.</span></div>
+            </section>
+            <section class="event-card studio-card" id="event-card" hidden>
+              <div class="panel-title"><div><span class="panel-kicker">LIVE EVENT</span><h2>Event setup &amp; schedule</h2></div></div>
+              <form id="event-form" class="event-form">
+                <label>Event name<input name="name" required maxlength="200" placeholder="e.g. College Arts Festival"></label>
+                <div class="event-fields"><label>Venue<input name="venue" maxlength="200" placeholder="Main auditorium"></label><label>Date<input name="event_date" type="date"></label></div>
+                <label>Chief guest<input name="chief_guest" maxlength="200" placeholder="Name (optional)"></label>
+                <label>Speakers<input name="speakers" maxlength="800" placeholder="Names, separated by commas"></label>
+                <label>Schedule <small>One item per line: time | title | speaker</small><textarea name="schedule" rows="3" placeholder="10:00 | Welcome | Anjali"></textarea></label>
+                <label>Tone<select name="tone"><option>Professional</option><option>Energetic</option><option>Youthful</option><option>Elegant</option></select></label>
+                <button class="event-save" type="submit">Save event details</button>
+              </form>
+              <div id="schedule-display"></div>
+              <button id="next-item" class="next-item" type="button" hidden>Announce next item <span>→</span></button>
+            </section>
+            <section class="studio-card segment-status-card">
+              <span class="panel-kicker">SESSION CONTROLS</span>
+              <h3>Live-safe editing</h3>
+              <ul><li>Edits stay in this browser until you save the draft.</li><li>Generating a new segment does not overwrite the text currently being spoken.</li><li>Pause-after-segment and queue replacement are unavailable without backend queue support.</li></ul>
+              <button class="stop-action" id="studio-stop" type="button">■ Stop current speech</button>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <section class="conversation-column" aria-label="Conversation">
+          <div class="welcome-panel" id="welcome-panel">
+            <div class="avatar-stage" id="avatar-stage" aria-hidden="true">
+              <div class="avatar-orbit orbit-one"></div><div class="avatar-orbit orbit-two"></div>
+              <div class="avatar-face"><span class="avatar-eyes"><i></i><i></i></span><span class="avatar-smile"></span><span class="avatar-cheek cheek-left"></span><span class="avatar-cheek cheek-right"></span></div>
+              <span class="avatar-spark spark-one">✦</span><span class="avatar-spark spark-two">✧</span>
+            </div>
+            <p class="eyebrow">READY WHEN YOU ARE</p>
+            <h2>Namaskaram, <span>friend.</span></h2>
+            <p class="welcome-copy">I can help you find the right words, tell a story, or bring your event to life.</p>
+            <div class="suggestion-row">
+              <button class="suggestion" data-prompt="Create a story about a robot in Kerala">✧ <span>A Kerala story</span></button>
+              <button class="suggestion" data-prompt="Write a warm welcome for our college arts festival">↗ <span>Welcome my guests</span></button>
+              <button class="suggestion" data-prompt="Tell me what AVA can do">◌ <span>Explore AVA</span></button>
+            </div>
+          </div>
+          <div class="chat-log" id="chat-log" aria-live="polite" aria-relevant="additions text"></div>
+          <div class="typing-indicator" id="typing-indicator" aria-label="AVA is thinking" hidden><span></span><span></span><span></span><small>AVA is thinking</small></div>
+          <div class="composer-wrap">
+            <form id="chat-form" class="composer">
+              <textarea id="message-input" rows="1" maxlength="8000" aria-label="Message AVA" placeholder="Ask AVA anything…"></textarea>
+              <div class="composer-controls">
+                <div class="composer-tools">
+                  <button type="button" class="tool-button" id="mic-button" aria-label="Start push-to-talk" title="Push to talk">♩<span>Talk</span></button>
+                  <button type="button" class="tool-button" id="continuous-button" aria-pressed="false" title="Toggle continuous listening">◉<span>Continuous</span></button>
+                  <span class="input-divider"></span><span class="input-tip">Enter to send · Shift + Enter for a new line</span>
+                </div>
+                <button class="send-button" id="send-button" type="submit" aria-label="Send message"><span>Send</span><span>↗</span></button>
+              </div>
+            </form>
+            <div class="composer-foot"><span id="microphone-status" role="status">Your microphone is only active when you choose to speak.</span><span>AVA may make mistakes · Review event details before speaking.</span></div>
+          </div>
+        </section>
+
+        <aside class="insight-column">
+          <section class="think-card">
+            <div class="panel-title"><div><span class="panel-kicker">BEHIND THE SCENES</span><h2>How AVA thinks</h2></div><span class="think-spark">✳</span></div>
+            <div class="think-row"><span class="think-label">Intent</span><span class="think-value" id="think-intent">Waiting for your cue</span></div>
+            <div class="think-row"><span class="think-label">Model</span><span class="think-value model-value" id="think-model">gemini-2.5-flash</span></div>
+            <div class="think-row"><span class="think-label">Response time</span><span class="think-value" id="think-latency">—</span></div>
+            <div class="think-context"><span class="think-label">Relevant memory</span><p id="think-context">Context appears when it helps.</p></div>
+          </section>
+          <section class="robot-card" id="robot-card">
+            <div class="robot-header"><div><span class="panel-kicker">ROBOT COMPANION</span><h2>AVA, in motion</h2></div><span class="sim-badge"><i></i> SIMULATED</span></div>
+            <div class="robot-scene" id="robot-scene" aria-label="Animated simulated robot">
+              <div class="scene-glow"></div><div class="robot-shadow"></div>
+              <div class="robot-antenna"><i></i></div><div class="robot-head"><div class="robot-ear ear-left"></div><div class="robot-ear ear-right"></div><div class="robot-eye eye-left"></div><div class="robot-eye eye-right"></div><div class="robot-mouth"></div></div>
+              <div class="robot-neck"></div><div class="robot-body"><span class="robot-core"></span><span class="robot-body-line"></span></div><div class="robot-arm arm-left"></div><div class="robot-arm arm-right"></div>
+              <span class="robot-caption" id="robot-caption">Ready to greet</span>
+            </div>
+            <div class="visualizer" id="visualizer" aria-label="Speech visualizer"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </section>
+        </aside>
+      </div>
+      <footer class="app-footer"><span>Designed for the moments that matter.</span><span>Gemini AI · local SQLite memory</span></footer>
+    </main>
+  </div>
+  <dialog id="settings-dialog" class="settings-dialog">
+    <form method="dialog" class="settings-heading"><div><span class="panel-kicker">PREFERENCES</span><h2>Make AVA yours</h2></div><button class="icon-button" aria-label="Close settings">×</button></form>
+    <form id="settings-form" class="settings-form">
+      <label>Gemini model<input id="model-setting" readonly value="gemini-2.5-flash"><small>Set GEMINI_MODEL in .env or config/ava.yaml.</small></label>
+      <label>Speaking voice<select id="voice-setting"></select></label>
+      <label>Microphone<select id="mic-setting"><option value="">Default microphone</option></select></label>
+      <label>Robot connection<input id="robot-setting" readonly value="simulated"></label>
+      <label>Robot serial port<input id="robot-port-setting" readonly value="Configure in config/ava.yaml"><small>Configure the COM port and baud rate in config/ava.yaml, then restart AVA.</small></label>
+      <button class="event-save" type="submit">Save preferences</button>
+    </form>
+  </dialog>
+  <dialog id="script-preview-dialog" class="settings-dialog script-preview-dialog">
+    <form method="dialog" class="settings-heading"><div><span class="panel-kicker">FULL SCRIPT</span><h2>Preview</h2></div><button class="icon-button" aria-label="Close script preview">×</button></form>
+    <pre id="script-preview-text" class="script-preview-text"></pre>
+  </dialog>
+  <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+</body>
+</html>

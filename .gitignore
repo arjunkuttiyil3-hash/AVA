@@ -1,10 +1,15 @@
-﻿venv/
-.venv/
-__pycache__/
-*.pyc
+﻿
 .env
-.vscode/
-node_modules/
+.env.*
+!.env.example
+
+audio/cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
 
 # Database files
 *.db
