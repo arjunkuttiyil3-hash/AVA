@@ -26,6 +26,10 @@
   let audioGeneration = 0;
   let silenceSuggestionSeconds = 8;
   let activeScriptKey = "";
+  let scheduleTimer = null;
+  let scheduleSignature = "";
+  let announcementInProgress = false;
+  let editingItemId = 0;
 
   const itemStatusLabels = {
     pending: "scheduled",
@@ -169,6 +173,7 @@
     } else if ((!item || item.type !== "speech" || item.status !== "on_stage") && captureEnabled) {
       stopCapture();
     }
+    syncScheduledPlayback();
   }
 
   function renderItems(items) {
@@ -196,6 +201,7 @@
         item.type,
         item.person_name,
         item.designation,
+        item.scheduled_time,
         item.planned_duration ? `${item.planned_duration} min` : "",
       ].filter(Boolean).join(" · ");
       card.append(details);
@@ -441,13 +447,16 @@
   }
 
   async function editItem(item) {
-    const title = window.prompt("Schedule item title", item.title);
-    if (title === null) return;
-    const personName = window.prompt("Person / speaker name", item.person_name || "");
-    if (personName === null) return;
-    const designation = window.prompt("Designation", item.designation || "");
-    if (designation === null) return;
-    await updateItem(item, { title, person_name: personName, designation });
+    editingItemId = item.id;
+    const form = $("#edit-item-form");
+    form.elements.namedItem("title").value = item.title;
+    form.elements.namedItem("type").value = item.type;
+    form.elements.namedItem("scheduled_time").value = item.scheduled_time || "";
+    form.elements.namedItem("person_name").value = item.person_name || "";
+    form.elements.namedItem("designation").value = item.designation || "";
+    form.elements.namedItem("planned_duration").value = item.planned_duration || 0;
+    form.elements.namedItem("participant_details").value = item.participant_details || "";
+    $("#edit-item-dialog").showModal();
   }
 
   async function unlockAudio() {
@@ -509,6 +518,67 @@
     return true;
   }
 
+  function scheduledTimestamp(item) {
+    if (!item.scheduled_time) return null;
+    const [hours, minutes] = item.scheduled_time.split(":").map(Number);
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+    const now = new Date();
+    const eventDate = eventState.date && /^\d{4}-\d{2}-\d{2}$/.test(eventState.date)
+      ? new Date(`${eventState.date}T00:00:00`)
+      : null;
+    const target = new Date(
+      eventDate && eventDate >= new Date(now.getFullYear(), now.getMonth(), now.getDate())
+        ? eventDate
+        : now,
+    );
+    target.setHours(hours, minutes, 0, 0);
+    return target.getTime();
+  }
+
+  function syncScheduledPlayback() {
+    const current = currentItem();
+    const next = current && eventState?.items.find((item) =>
+      item.order_index > current.order_index
+      && !["absent", "removed", "skipped", "done"].includes(item.status));
+    if (eventState?.status !== "running" || !next?.scheduled_time) {
+      window.clearTimeout(scheduleTimer);
+      scheduleTimer = null;
+      scheduleSignature = "";
+      return;
+    }
+    const timestamp = scheduledTimestamp(next);
+    if (timestamp === null) return;
+    const signature = `${eventState.id}:${current.id}:${next.id}:${timestamp}`;
+    if (scheduleSignature === signature && scheduleTimer !== null) return;
+    window.clearTimeout(scheduleTimer);
+    scheduleSignature = signature;
+
+    const runWhenReady = () => {
+      scheduleTimer = null;
+      if (eventState?.status !== "running" || currentItem()?.id !== current.id) {
+        syncScheduledPlayback();
+        return;
+      }
+      const remaining = timestamp - Date.now();
+      if (remaining > 0) {
+        scheduleTimer = window.setTimeout(runWhenReady, Math.min(remaining, 2_147_000_000));
+        return;
+      }
+      const audioPlaying = (activeAudio && !activeAudio.paused && !activeAudio.ended)
+        || Boolean(activeUtterance && window.speechSynthesis?.speaking);
+      if (announcementInProgress || audioPlaying) {
+        scheduleTimer = window.setTimeout(runWhenReady, 1000);
+        return;
+      }
+      scheduleSignature = "";
+      void callNow(next.id);
+    };
+    scheduleTimer = window.setTimeout(
+      runWhenReady,
+      Math.max(0, Math.min(timestamp - Date.now(), 2_147_000_000)),
+    );
+  }
+
   async function callNow(itemId = null) {
     if (!eventId) {
       notify("Set up an event before calling a schedule item.");
@@ -520,6 +590,7 @@
     }
     stopBrowserAudio();
     const generation = audioGeneration;
+    announcementInProgress = true;
     try {
       try {
         await unlockAudio();
@@ -544,6 +615,27 @@
       const played = result.audio_url ? await playUrl(result.audio_url) : false;
       if (!played && !speakFallback(result.text, result.event.language)) {
         notify(result.text || "The announcement is ready, but no speech output is available.");
+      }
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      announcementInProgress = false;
+      syncScheduledPlayback();
+    }
+  }
+
+  async function startEventFlow() {
+    try {
+      try {
+        await unlockAudio();
+      } catch {
+        notify("Audio unlock failed; browser speech will be tried after starting.");
+      }
+      const started = await afterMutation(() => post(`/api/live-events/${eventId}/start`));
+      if (started.current_item_id) {
+        await callNow(started.current_item_id);
+      } else {
+        notify("The event started, but there are no eligible program items to announce.");
       }
     } catch (error) {
       notify(error.message);
@@ -678,7 +770,7 @@
       notify(error.message);
     }
   });
-  $("#start-event").addEventListener("click", () => runAction(`/api/live-events/${eventId}/start`));
+  $("#start-event").addEventListener("click", () => void startEventFlow());
   $("#pause-event").addEventListener("click", () => runAction(`/api/live-events/${eventId}/pause`));
   $("#end-event").addEventListener("click", () => {
     if (!window.confirm("Stop and close this event?")) return;
@@ -741,6 +833,7 @@
       designation: String(data.get("designation") || ""),
       planned_duration: Number(data.get("planned_duration") || 0),
       transcript_language: String(data.get("transcript_language") || "auto"),
+      scheduled_time: String(data.get("scheduled_time") || ""),
     };
     if (rawPosition) item.position = Number(rawPosition) - 1;
     try {
@@ -749,6 +842,36 @@
     } catch (error) {
       notify(error.message);
     }
+  });
+  $("#edit-item-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const item = eventState?.items.find((entry) => entry.id === editingItemId);
+    if (!item) {
+      $("#edit-item-dialog").close();
+      notify("That program item is no longer in the live schedule.");
+      return;
+    }
+    try {
+      await afterMutation(() => patch(`/api/event/items/${item.id}`, {
+        event_id: eventId,
+        title: String(data.get("title") || "").trim(),
+        type: String(data.get("type") || "other"),
+        scheduled_time: String(data.get("scheduled_time") || ""),
+        person_name: String(data.get("person_name") || "").trim(),
+        designation: String(data.get("designation") || "").trim(),
+        planned_duration: Number(data.get("planned_duration") || 0),
+        participant_details: String(data.get("participant_details") || "").trim(),
+      }));
+      $("#edit-item-dialog").close();
+      notify("Program item updated.");
+    } catch (error) {
+      notify(error.message);
+    }
+  });
+  ["#cancel-item-edit", "#cancel-item-edit-secondary"].forEach((selector) => {
+    $(selector).addEventListener("click", () => $("#edit-item-dialog").close());
   });
   $("#capture-toggle").addEventListener("click", () => {
     const item = currentItem();

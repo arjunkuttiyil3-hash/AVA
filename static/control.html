@@ -86,8 +86,9 @@
             </div>
             <div class="form-two">
               <label>Duration (minutes)<input name="planned_duration" type="number" min="0" max="600" value="0"></label>
-              <label>Transcript language<select name="transcript_language"><option value="auto">Auto</option><option value="en">English</option><option value="ml">Malayalam</option></select></label>
+              <label>Scheduled time<input name="scheduled_time" type="time"></label>
             </div>
+            <label>Transcript language<select name="transcript_language"><option value="auto">Auto</option><option value="en">English</option><option value="ml">Malayalam</option></select></label>
             <button class="secondary-button" type="submit">＋ Add item</button>
           </form>
         </section>
@@ -160,6 +161,29 @@
         </section>
       </aside>
     </div>
+    <dialog id="edit-item-dialog" class="edit-item-dialog">
+      <form id="edit-item-form" class="edit-item-form">
+        <div class="control-card-heading">
+          <div><span class="panel-kicker">LIVE SCHEDULE</span><h2>Edit program item</h2></div>
+          <button id="cancel-item-edit" class="secondary-button" type="button">Cancel</button>
+        </div>
+        <label>Program title<input name="title" required maxlength="200"></label>
+        <div class="form-two">
+          <label>Type<select name="type"><option value="speech">Speech</option><option value="welcome">Welcome</option><option value="performance">Performance</option><option value="break">Break</option><option value="vote_of_thanks">Vote of thanks</option><option value="other">Other</option></select></label>
+          <label>Scheduled time<input name="scheduled_time" type="time"></label>
+        </div>
+        <div class="form-two">
+          <label>Person / speaker<input name="person_name" maxlength="160"></label>
+          <label>Designation<input name="designation" maxlength="160"></label>
+        </div>
+        <label>Duration (minutes)<input name="planned_duration" type="number" min="0" max="600"></label>
+        <label>Program details<textarea name="participant_details" rows="3" maxlength="1200"></textarea></label>
+        <div class="event-controls">
+          <button class="primary-button" type="submit">Save program item</button>
+          <button id="cancel-item-edit-secondary" class="secondary-button" type="button">Cancel</button>
+        </div>
+      </form>
+    </dialog>
     <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
   </main>
 </body>

@@ -53,5 +53,15 @@
 .text-action { padding: 5px 7px; border: 0; color: var(--mint); background: transparent; cursor: pointer; font-size: 9px; }
 .text-action:hover { color: var(--mint-bright); }
 .empty-state { padding: 13px; margin: 0; color: var(--faint); font-size: 9px; line-height: 1.6; }
+.speech-commentary-card > .studio-note { margin: -5px 0 12px; }
+.speech-test-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.speech-test-controls button:disabled { cursor: not-allowed; opacity: .45; }
+.speech-test-label, .speech-commentary-result > label { display: grid; gap: 6px; color: var(--muted); font-size: 9px; }
+.speech-test-label textarea, .speech-commentary-result textarea { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; outline: none; color: var(--ink); background: #0c1424; font: 10px/1.6 var(--sans); resize: vertical; }
+.speech-test-label textarea:focus, .speech-commentary-result textarea:focus { border-color: #75dce77a; box-shadow: 0 0 0 3px #75dce712; }
+.speech-commentary-result { margin-top: 15px; padding-top: 14px; border-top: 1px solid var(--line); }
+.speech-commentary-result h4 { margin: 0 0 8px; font: 600 12px var(--display); }
+.speech-commentary-result ul { display: grid; gap: 5px; padding-left: 18px; margin: 0 0 13px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.speech-commentary-result .studio-actions { margin-top: 8px; }
 @media (max-width: 760px) { .studio-heading { align-items: flex-start; flex-direction: column; }.studio-item-fields { grid-template-columns: 1fr; }.studio-item-fields label:nth-last-child(-n+2) { grid-column: auto; } }
 @media (max-width: 520px) { .studio-card { padding: 12px; }.studio-fields { grid-template-columns: 1fr; }.studio-fields .field-wide { grid-column: auto; }.studio-card-heading { align-items: flex-start; flex-direction: column; }.script-audio-settings { width: 100%; flex-wrap: wrap; }.script-audio-settings label { flex: 1; }.studio-actions > button { flex: 1; } }

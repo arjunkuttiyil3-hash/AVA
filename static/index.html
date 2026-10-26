@@ -121,6 +121,35 @@
               <p class="studio-note">Your draft autosaves in this browser. Gemini requests stay on AVA?s server.</p>
             </form>
 
+            <section class="studio-card speech-commentary-card" aria-labelledby="speech-commentary-heading">
+              <div class="studio-card-heading">
+                <div><span class="panel-kicker">SPEECH REHEARSAL</span><h3 id="speech-commentary-heading">Test a speech and prepare your response</h3></div>
+                <span id="speech-test-status" class="studio-save-status" role="status">Microphone is off</span>
+              </div>
+              <p class="studio-note">Record a short speech sample or paste a transcript. AVA will identify its key points and draft a fact-grounded anchoring comment.</p>
+              <div class="speech-test-controls">
+                <button id="speech-record-start" class="secondary-action" type="button">● Record speech</button>
+                <button id="speech-record-stop" class="secondary-action" type="button" disabled>■ Stop and transcribe</button>
+              </div>
+              <label class="speech-test-label" for="speech-test-transcript">Speech transcript
+                <textarea id="speech-test-transcript" rows="6" maxlength="12000" placeholder="Your transcription will appear here. You can correct it or paste text before analysis."></textarea>
+              </label>
+              <p id="speech-test-error" class="field-error" role="alert" hidden></p>
+              <div class="studio-actions">
+                <button id="speech-analyze" class="primary-action" type="button">Analyze and draft comment</button>
+              </div>
+              <section id="speech-commentary-result" class="speech-commentary-result" hidden aria-live="polite">
+                <h4>Key points from the speech</h4>
+                <ul id="speech-key-points"></ul>
+                <label for="speech-commentary-script">Suggested anchoring comment
+                  <textarea id="speech-commentary-script" rows="4" maxlength="4000"></textarea>
+                </label>
+                <div class="studio-actions">
+                  <button id="speech-commentary-speak" class="secondary-action" type="button">▶ Speak comment</button>
+                </div>
+              </section>
+            </section>
+
             <section class="studio-card script-card" aria-labelledby="studio-script-heading">
               <div class="studio-card-heading"><div><span class="panel-kicker">02 ? SCRIPT</span><h3 id="studio-script-heading">Anchoring script</h3></div><div class="script-audio-settings"><label>Voice<select id="studio-voice" aria-label="Speech voice"><option value="">System default</option></select></label><label>Speed<input id="studio-speed" type="range" min="0.7" max="1.3" step="0.05" value="1" aria-label="Speech speed"></label><label>Pitch<input id="studio-pitch" type="range" min="0.7" max="1.3" step="0.05" value="1" aria-label="Speech pitch"></label></div></div>
               <div id="script-loading" class="studio-loading" role="status" hidden><span class="status-indicator"></span><span>Generating script segments?</span></div>

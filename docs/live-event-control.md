@@ -70,6 +70,14 @@ and `done` values as scheduled, present, in progress, and completed. This keeps
 existing databases and speaker-capture logic compatible. Paused events resume
 through the existing start route; ended events cannot restart or accept new
 schedule items. The closing line is returned when the operator ends an event.
+Starting or resuming from `/control` unlocks browser audio, starts the event,
+and immediately generates and plays the current item's introduction. A later
+eligible item with a scheduled `HH:MM` time is introduced automatically at that
+local time; if the previous audio is still playing, AVA waits for it to finish.
+Items without a scheduled time remain under manual **Next item** / **Call now**
+control. The operator can edit the title, type, speaker, duration, details, and
+scheduled time or add items while the event is live; schedule changes are
+persisted and synchronized to connected control windows.
 The current announcement line can be edited and copied from the control panel.
 Per-item lines and edits are stored in that browser's local storage; event
 progress and schedule changes remain authoritative in SQLite and synchronize

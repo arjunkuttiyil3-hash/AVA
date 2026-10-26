@@ -4,12 +4,13 @@
   async function request(path, options = {}) {
     let response;
     const { timeoutMs = 30_000, ...fetchOptions } = options;
+    const isFormData = fetchOptions.body instanceof FormData;
     try {
       response = await fetch(path, {
         ...fetchOptions,
         signal: fetchOptions.signal || AbortSignal.timeout(timeoutMs),
         headers: {
-          ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+          ...(fetchOptions.body && !isFormData ? { "Content-Type": "application/json" } : {}),
           ...fetchOptions.headers,
         },
       });
@@ -70,6 +71,22 @@
           targets,
           replace_edited_ids: replaceEditedIds,
         }),
+        timeoutMs: 90_000,
+      },
+    ),
+    transcribeSpeech: (audio, language) => {
+      const body = new FormData();
+      const extension = audio.type.includes("mp4") ? "mp4"
+        : audio.type.includes("ogg") ? "ogg"
+          : "webm";
+      body.append("audio", audio, `anchoring-speech.${extension}`);
+      body.append("language", language);
+      return request("/api/transcribe", { method: "POST", body, timeoutMs: 90_000 });
+    },
+    analyzeSpeech: (eventId, transcript, language) => request(
+      "/api/anchoring/speech-commentary",
+      {
+        ...json("POST", { event_id: eventId, transcript, language }),
         timeoutMs: 90_000,
       },
     ),

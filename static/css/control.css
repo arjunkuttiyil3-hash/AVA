@@ -68,5 +68,11 @@
 .empty-control .primary-link { margin-top: 10px; }
 .toast-region { position: fixed; right: 18px; bottom: 18px; z-index: 10; display: grid; gap: 7px; }
 .toast { max-width: 360px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 8px; background: #202a3c; color: var(--ink); box-shadow: 0 8px 28px #0005; font-size: 11px; }
+.edit-item-dialog { width: min(560px, calc(100% - 28px)); max-height: min(90vh, 760px); padding: 0; overflow: auto; border: 1px solid var(--line); border-radius: 13px; background: #171e2c; color: var(--ink); box-shadow: 0 24px 80px #0009; }
+.edit-item-dialog::backdrop { background: #060914bb; backdrop-filter: blur(3px); }
+.edit-item-form { display: grid; gap: 12px; padding: 20px; }
+.edit-item-form .control-card-heading { margin-bottom: 2px; }
+.edit-item-form label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.edit-item-dialog input, .edit-item-dialog select, .edit-item-dialog textarea { width: 100%; min-height: 37px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: #111725; color: var(--ink); resize: vertical; }
 @media (max-width: 950px) { .control-grid { grid-template-columns: minmax(0, 1fr); } .control-side { grid-template-columns: repeat(2, minmax(0, 1fr)); } .control-side > :last-child { grid-column: 1 / -1; } }
 @media (max-width: 650px) { .control-header { align-items: start; flex-direction: column; } .control-header-actions { justify-content: start; } .control-side { grid-template-columns: 1fr; } .control-side > :last-child { grid-column: auto; } .event-fields-control { grid-template-columns: repeat(2, minmax(0, 1fr)); } .current-next-items { grid-template-columns: 1fr; } .control-card { padding: 14px; } }

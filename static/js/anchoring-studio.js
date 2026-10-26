@@ -16,6 +16,9 @@
     autoCloseBusy: false,
     retryTargets: null,
     saveTimer: 0,
+    speechRecorder: null,
+    speechStream: null,
+    speechChunks: [],
   };
   const typeOptions = [
     ["participant", "Participant"],
@@ -28,6 +31,125 @@
   function setError(element, message = "") {
     element.textContent = message;
     element.hidden = !message;
+  }
+
+  function setSpeechStatus(message) {
+    $("#speech-test-status").textContent = message;
+  }
+
+  function releaseSpeechStream() {
+    state.speechStream?.getTracks().forEach((track) => track.stop());
+    state.speechStream = null;
+  }
+
+  async function transcribeSpeechSample(blob) {
+    if (!blob.size) {
+      setError($("#speech-test-error"), "The recording was empty. Please record again.");
+      setSpeechStatus("No audio captured");
+      return;
+    }
+    setSpeechStatus("Transcribing speech…");
+    $("#speech-record-start").disabled = true;
+    try {
+      const result = await api.transcribeSpeech(
+        blob,
+        form.elements.namedItem("language").value || "en",
+      );
+      if (!result.text.trim()) {
+        throw new Error("No speech was recognized. Try a clearer or longer recording.");
+      }
+      $("#speech-test-transcript").value = result.text;
+      $("#speech-commentary-result").hidden = true;
+      setError($("#speech-test-error"));
+      setSpeechStatus(`Transcribed · ${result.language}`);
+    } catch (error) {
+      setError($("#speech-test-error"), error.message);
+      setSpeechStatus("Transcription failed");
+    } finally {
+      $("#speech-record-start").disabled = false;
+    }
+  }
+
+  async function startSpeechTestRecording() {
+    setError($("#speech-test-error"));
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setError($("#speech-test-error"), "Speech recording is not supported by this browser.");
+      return;
+    }
+    try {
+      state.speechStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      state.speechChunks = [];
+      const preferredType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
+        .find((type) => MediaRecorder.isTypeSupported(type));
+      state.speechRecorder = preferredType
+        ? new MediaRecorder(state.speechStream, { mimeType: preferredType })
+        : new MediaRecorder(state.speechStream);
+      state.speechRecorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size) state.speechChunks.push(event.data);
+      });
+      state.speechRecorder.addEventListener("stop", () => {
+        const recording = new Blob(state.speechChunks, {
+          type: state.speechRecorder?.mimeType || "audio/webm",
+        });
+        state.speechRecorder = null;
+        state.speechChunks = [];
+        releaseSpeechStream();
+        $("#speech-record-stop").disabled = true;
+        void transcribeSpeechSample(recording);
+      }, { once: true });
+      state.speechRecorder.start();
+      $("#speech-record-start").disabled = true;
+      $("#speech-record-stop").disabled = false;
+      setSpeechStatus("Recording · speak clearly, then stop");
+    } catch (error) {
+      releaseSpeechStream();
+      setError($("#speech-test-error"), `Could not start microphone recording: ${error.message}`);
+      setSpeechStatus("Microphone unavailable");
+    }
+  }
+
+  function stopSpeechTestRecording() {
+    if (state.speechRecorder?.state === "recording") {
+      state.speechRecorder.stop();
+      setSpeechStatus("Preparing transcription…");
+    }
+  }
+
+  async function analyzeSpeechSample() {
+    const transcript = $("#speech-test-transcript").value.trim();
+    if (transcript.length < 3) {
+      setError($("#speech-test-error"), "Record or enter a speech transcript before analysis.");
+      return;
+    }
+    setError($("#speech-test-error"));
+    if (!state.event && !(await saveEvent())) return;
+    const button = $("#speech-analyze");
+    button.disabled = true;
+    button.textContent = "Analyzing speech…";
+    setSpeechStatus("Finding key points and drafting an anchoring comment…");
+    try {
+      const result = await api.analyzeSpeech(
+        state.event.id,
+        transcript,
+        form.elements.namedItem("language").value || state.event.language || "en",
+      );
+      const points = $("#speech-key-points");
+      points.replaceChildren();
+      result.key_points.forEach((point) => {
+        const item = document.createElement("li");
+        item.textContent = point;
+        points.append(item);
+      });
+      $("#speech-commentary-script").value = result.commentary_script;
+      $("#speech-commentary-result").hidden = false;
+      setSpeechStatus("Commentary draft ready");
+    } catch (error) {
+      setError($("#speech-test-error"), error.message);
+      setSpeechStatus("Analysis failed");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Analyze and draft comment";
+    }
   }
 
   function saveDraft() {
@@ -617,6 +739,22 @@
   form.addEventListener("input", saveDraft);
   form.addEventListener("change", saveDraft);
   $("#save-event-details").addEventListener("click", () => { void saveEvent(); });
+  $("#speech-record-start").addEventListener("click", () => {
+    void startSpeechTestRecording();
+  });
+  $("#speech-record-stop").addEventListener("click", stopSpeechTestRecording);
+  $("#speech-analyze").addEventListener("click", () => {
+    void analyzeSpeechSample();
+  });
+  $("#speech-commentary-speak").addEventListener("click", () => {
+    const text = $("#speech-commentary-script").value.trim();
+    if (!text) {
+      setError($("#speech-test-error"), "Generate a commentary script before playing it.");
+      return;
+    }
+    setError($("#speech-test-error"));
+    speak(text);
+  });
   $("#retry-script").addEventListener("click", () => {
     const targets = state.retryTargets || fullScriptTargets();
     void regenerateTargets(targets);
@@ -640,6 +778,8 @@
     if (sessionId) void loadSessionEvent(localStorage.getItem("ava-event-id"));
   }
   function resetSession() {
+    stopSpeechTestRecording();
+    releaseSpeechStream();
     state.event = null;
     state.script = [];
     form.reset();
@@ -648,6 +788,11 @@
     localStorage.removeItem("ava-event-id");
     localStorage.removeItem("ava-anchoring-studio");
   }
+
+  window.addEventListener("beforeunload", () => {
+    stopSpeechTestRecording();
+    releaseSpeechStream();
+  });
 
   window.AVAAnchoringStudio = Object.freeze({ setSession, loadSessionEvent, resetSession });
   initializeVoices();

@@ -125,6 +125,10 @@ cancels current browser playback and signals the active response stream to stop.
 ## Live event control and speaker summaries
 
 1. Create an event and schedule from **Anchoring** on the main page.
+   In Anchoring Studio, **Speech rehearsal** can record a speech sample or take
+   pasted text, transcribe it, extract key points, and draft a spoken response
+   using the event context. Review the editable comment and use **Speak comment**
+   to hear it; the generated response is kept separate from the saved event script.
 2. Open **Live event control** or browse to <http://127.0.0.1:8000/control>.
    Event metadata, attendance, schedule order, and item status can be changed
    while AVA is running. The normalized SQLite `event_control`, `schedule_items`,
