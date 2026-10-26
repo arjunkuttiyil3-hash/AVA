@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>AVA Live - {{ event['name'] }}</title>
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='css/style.css') }}">
+
+    <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
+
+</head>
+
+<body>
+
+<main class="container live-page">
+    <header class="live-header">
+        <div>
+            <p class="eyebrow">On air</p>
+            <h1>AVA <span aria-hidden="true">●</span></h1>
+            <h2>Live Event Control</h2>
+        </div>
+        <h3>{{ event['name'] }}</h3>
+    </header>
+
+    <section class="live-flow" aria-label="Event running order">
+    <div class="flow-panel">
+    <h2>Previous Event</h2>
+
+    {% if previous %}
+
+        <p>
+            {{ previous['event_time'] }}
+            —
+            {{ previous['title'] }}
+        </p>
+
+        {% if previous['participant'] %}
+            <p>
+                Participant:
+                {{ previous['participant'] }}
+            </p>
+        {% endif %}
+
+    {% else %}
+
+        <p>No previous event.</p>
+
+    {% endif %}
+
+
+    </div>
+
+    <div class="flow-panel current-panel">
+        <h2>Current Event</h2>
+        <h3>{{ current['title'] }}</h3>
+
+        <p>
+            <strong>Time:</strong> {{ current['event_time'] }}
+        </p>
+
+        <p>
+            <strong>Type:</strong> {{ current['event_type'] }}
+        </p>
+
+        {% if current['participant'] %}
+
+            <p>
+                Participant:
+                {{ current['participant'] }}
+            </p>
+
+        {% endif %}
+
+    </div>
+
+    <div class="flow-panel">
+    <h2>Next Event</h2>
+
+    {% if next_event %}
+
+        <p>
+            {{ next_event['event_time'] }}
+            —
+            {{ next_event['title'] }}
+        </p>
+
+        {% if next_event['participant'] %}
+
+            <p>
+                Participant:
+                {{ next_event['participant'] }}
+            </p>
+
+        {% endif %}
+
+    {% else %}
+
+        <p>
+            This is the final event.
+        </p>
+
+    {% endif %}
+
+
+    </div>
+    </section>
+
+    <div class="live-actions">
+        <form method="POST" action="{{ url_for('generate_event_script', event_id=event['id']) }}">
+            <button type="submit">🤖 Generate Script</button>
+        </form>
+        <button id="play-script" class="secondary-button" type="button" {% if not script %}disabled{% endif %}>
+            ▶ Play
+        </button>
+        <form method="POST" action="{{ url_for('next_event', event_id=event['id']) }}">
+            <button type="submit">⏭️ Next Event</button>
+        </form>
+    </div>
+
+{% if script %}
+
+    <section class="script-panel">
+        <h2>🎙️ AVA Generated Script</h2>
+        <p id="generated-script">{{ script }}</p>
+    </section>
+
+{% endif %}
+</main>
+
+</body>
+
+</html>

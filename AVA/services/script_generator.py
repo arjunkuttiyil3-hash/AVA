@@ -48,10 +48,14 @@ def _load_model():
 
 def _event_details(item):
     title = item["title"]
+<<<<<<< HEAD
     participant = (item["participant"] if "participant" in item.keys() else "")
     participant = (participant or "").strip()
     description = (item["description"] if "description" in item.keys() else "")
     description = (description or "").strip()
+=======
+    participant = (item["participant"] or "").strip()
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
     title_words = set(re.findall(r"\w+", title.casefold()))
     participant_words = set(re.findall(r"\w+", participant.casefold()))
 
@@ -62,6 +66,7 @@ def _event_details(item):
     else:
         participant_text = participant
 
+<<<<<<< HEAD
     details = f"Title: {title}\nParticipant: {participant_text}"
     if description:
         details += f"\nDescription: {description}"
@@ -77,6 +82,16 @@ def _build_script_prompt(event_name, event_description, previous, current, next_
         current is not None and "participant" in current.keys() and current["participant"]
     )
     event_description = event_description or ""
+=======
+    return f"Title: {title}\nParticipant: {participant_text}"
+
+
+def generate_script(event_name, previous, current, next_event, style="Energetic"):
+
+    previous_text = _event_details(previous) if previous else "Not available"
+    current_text = _event_details(current)
+    next_text = _event_details(next_event) if next_event else "Not available"
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
 
     styles = {
 
@@ -120,6 +135,7 @@ Avoid casual expressions and humor.
         styles["Energetic"]
     )
 
+<<<<<<< HEAD
     speaker_instruction = ""
     if not current_has_speaker:
         speaker_instruction = (
@@ -132,6 +148,10 @@ You are AVA, the virtual anchor for this college event.
 
 You must deliver the introduction and announcement yourself.
 Do not assign the introduction to another person, host, speaker, or participant.
+=======
+    prompt = f"""
+You are AVA, an AI stage anchor hosting a college event.
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
 
 Your job is to write a natural spoken announcement for the
 CURRENT segment of the event.
@@ -139,9 +159,12 @@ CURRENT segment of the event.
 Event:
 {event_name}
 
+<<<<<<< HEAD
 Program Description:
 {event_description or 'Not provided'}
 
+=======
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
 Previous Event:
 {previous_text}
 
@@ -156,6 +179,7 @@ ANCHORING STYLE:
 
 CONTENT AND DELIVERY REQUIREMENTS:
 
+<<<<<<< HEAD
 - Write exactly 2 or 3 short sentences, with about 25 to 45 words total.
 - Introduce the current title once. Mention the participant only if not already included in the title.
 - Include the current description when one is provided, using it as factual context for the announcement.
@@ -170,6 +194,16 @@ CONTENT AND DELIVERY REQUIREMENTS:
 - Make the chosen style affect wording and rhythm only, never the facts.
 - Use natural, concise spoken English with correct punctuation and clear subject-verb agreement.
 - Keep the engagement sentence simple and brief so the event information remains clear.
+=======
+- Write 2 or 3 short sentences, about 25 to 45 words total.
+- Introduce the current title once. Mention the participant only if not already included in the title.
+- If a previous event is listed, use at most one brief transition to it.
+- Mention the next event only when one is listed; otherwise end after introducing the current event.
+- Use only the supplied details. Do not invent atmosphere, audience reactions, praise, achievements, genre, or event facts.
+- Avoid repeating names, titles, ideas, and stock phrases such as "get ready" or "wild night".
+- Make the chosen style affect wording and rhythm only, never the facts.
+- Use natural, concise spoken English.
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
 - Do not make every announcement sound identical.
 - Output ONLY the announcement.
 - Do not include headings, quotation marks, markdown or stage directions.
@@ -177,6 +211,7 @@ CONTENT AND DELIVERY REQUIREMENTS:
 Generate the announcement now.
 """
 
+<<<<<<< HEAD
     return prompt
 
 
@@ -190,6 +225,8 @@ def generate_script(event_name, event_description, previous, current, next_event
         style
     )
 
+=======
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
     messages = [
         {
             "role": "system",

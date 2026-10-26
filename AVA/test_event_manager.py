@@ -1,8 +1,12 @@
+<<<<<<< HEAD
 import unittest
 
 from app import app
 from services.event_manager import EventManager
 from services.script_generator import _event_details
+=======
+from services.event_manager import EventManager
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
 
 
 schedule = [
@@ -27,6 +31,7 @@ schedule = [
 
 manager = EventManager(schedule)
 
+<<<<<<< HEAD
 
 class EventDetailsTest(unittest.TestCase):
     def test_includes_description_in_current_event_details(self):
@@ -175,3 +180,26 @@ class EventDetailsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+=======
+print("CURRENT:")
+print(manager.get_current())
+
+print("\nNEXT:")
+print(manager.get_next())
+
+print("\nPREVIOUS:")
+print(manager.get_previous())
+
+print("\nMoving to next event...")
+
+manager.next_event()
+
+print("\nCURRENT:")
+print(manager.get_current())
+
+print("\nNEXT:")
+print(manager.get_next())
+
+print("\nPREVIOUS:")
+print(manager.get_previous())
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2

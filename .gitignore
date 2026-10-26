@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 AVA/venv/
 AVA/.venv/
 AVA/__pycache__/
@@ -5,3 +6,29 @@ AVA/__pycache__/
 *.pyc
 *.pyo
 .env
+=======
+﻿
+.env
+.env.*
+!.env.example
+
+audio/cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# AI model files
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2

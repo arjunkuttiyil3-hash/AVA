@@ -30,6 +30,7 @@
         {{ event['event_date'] }}
     </p>
 
+<<<<<<< HEAD
     {% if event is not none and 'description' in event.keys() and event['description'] %}
         <p>
             <strong>Program Description:</strong>
@@ -37,6 +38,8 @@
         </p>
     {% endif %}
 
+=======
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
     <hr>
 
     <h2>Event Schedule</h2>
@@ -57,11 +60,14 @@
                     — {{ item['participant'] }}
                 {% endif %}
 
+<<<<<<< HEAD
                 {% if 'description' in item.keys() and item['description'] %}
                     <br>
                     <small>{{ item['description'] }}</small>
                 {% endif %}
 
+=======
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
                 <small>
                     ({{ item['event_type'] }})
                 </small>
@@ -163,6 +169,7 @@
 
         <br>
 
+<<<<<<< HEAD
         <div>
 
             <label>Event Description</label>
@@ -178,6 +185,8 @@
 
         <br>
 
+=======
+>>>>>>> 93044976bf212e81ece22241ed8689e82df156e2
         <button type="submit">
             Add to Schedule
         </button>

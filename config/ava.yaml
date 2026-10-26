@@ -1,0 +1,127 @@
+app:
+  name: AVA
+  host: 127.0.0.1
+  port: 8000
+  log_level: INFO
+
+llm:
+  default_model: gemini-3.5-flash
+  fallback_model: gemini-3.6-flash
+  timeout_seconds: 60
+  retries: 2
+  latency_budget_ms: 30000
+  token_budget: 4096
+  routes:
+    chat_question:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 10000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+      resource_fallback:
+        backend: template
+        model: template
+    story_request:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 12000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+    story_followup:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 12000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+    anchoring_script:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 10000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+    schedule_next:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 10000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+    intent_classifier:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 1000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+    conversation_summary:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 5000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+    speaker_summary:
+      candidates:
+        - backend: gemini
+          model: gemini-3.5-flash
+          estimated_latency_ms: 10000
+          min_available_memory_mb: 2048
+        - backend: template
+          model: template
+          estimated_latency_ms: 20
+          min_available_memory_mb: 0
+      resource_fallback:
+        backend: template
+        model: template
+    default:
+      backend: template
+
+speech:
+  stt_model: small
+  language: en
+  vad_filter: true
+  speaker_silence_suggestion_seconds: 8
+  tts_provider: edge
+  voices:
+    en: en-IN-NeerjaNeural
+    ml: ml-IN-SobhanaNeural
+    ml_male: ml-IN-MidhunNeural
+  cache_dir: audio/cache
+  offline_malayalam_model: facebook/mms-tts-mal
+
+memory:
+  database_path: database/ava.db
+  short_term_turns: 12
+  retrieval_limit: 5
+  token_budget: 4096
+  embeddings_enabled: false
+
+robot:
+  mode: simulated
+  serial_port: ""
+  baud_rate: 115200
