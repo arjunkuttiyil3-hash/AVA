@@ -30,6 +30,7 @@
   let scheduleSignature = "";
   let announcementInProgress = false;
   let editingItemId = 0;
+  const eventSummaryAudioSeen = new Set();
 
   const itemStatusLabels = {
     pending: "scheduled",
@@ -43,6 +44,22 @@
 
   function displayItemStatus(status) {
     return itemStatusLabels[status] || status.replaceAll("_", " ");
+  }
+
+  async function playEventSummary(payload) {
+    const summaryEventId = Number(payload.event_id);
+    if (!summaryEventId || eventSummaryAudioSeen.has(summaryEventId)) return;
+    eventSummaryAudioSeen.add(summaryEventId);
+    try {
+      const played = await playUrl(payload.url);
+      if (!played && !speakFallback(payload.summary, payload.language)) {
+        notify("Event summary is ready, but speech playback is unavailable.");
+        return;
+      }
+      notify("Event summary is being spoken.");
+    } catch (error) {
+      notify(`Could not play the event summary: ${error.message}`);
+    }
   }
 
   function scriptStorageKey(id = eventId) {
@@ -97,6 +114,11 @@
 
   function currentItem() {
     return eventState?.items.find((item) => item.id === eventState.current_item_id) || null;
+  }
+
+  function isSpeechOrTalk(item) {
+    return ["speech", "talk", "keynote", "lecture", "presentation"]
+      .includes(String(item?.type || "").trim().toLowerCase());
   }
 
   function render(event) {
@@ -161,8 +183,9 @@
     }
     $("#transcript-editor").value = item?.transcript || "";
     $("#summary-editor").value = item?.summary || "";
-    $("#speech-finished").disabled = !item || item.type !== "speech" || item.status !== "on_stage";
-    if (item?.id !== captureSuppressedItemId && item?.type === "speech"
+    $(".speech-card").hidden = !isSpeechOrTalk(item);
+    $("#speech-finished").disabled = !isSpeechOrTalk(item) || item.status !== "on_stage";
+    if (item?.id !== captureSuppressedItemId && isSpeechOrTalk(item)
       && item.status === "on_stage" && capturingItemId !== item.id) {
       if (captureEnabled) {
         capturingItemId = item.id;
@@ -170,7 +193,7 @@
       } else {
         void beginCapture(item);
       }
-    } else if ((!item || item.type !== "speech" || item.status !== "on_stage") && captureEnabled) {
+    } else if ((!isSpeechOrTalk(item) || item.status !== "on_stage") && captureEnabled) {
       stopCapture();
     }
     syncScheduledPlayback();
@@ -320,7 +343,7 @@
       retryCount = 0;
       $("#socket-state").textContent = "Live sync connected";
       $("#socket-state").classList.add("connected");
-      socket.send(JSON.stringify({ type: "subscribe_event", event_id: eventId }));
+      socket.send(JSON.stringify({ type: "subscribe_event", event_id: eventId, client: "control" }));
       socket.send(JSON.stringify({ type: "ping", time: Date.now() }));
     });
     socket.addEventListener("message", (message) => {
@@ -336,6 +359,8 @@
           stopBrowserAudio();
           notify("AVA stopped speaking because the current item changed.");
         }
+      } else if (payload.type === "event_summary_audio") {
+        void playEventSummary(payload);
       } else if (payload.type === "speech_stop") {
         stopBrowserAudio();
         notify("Emergency stop received.");
@@ -644,7 +669,11 @@
 
   function startRecorderSegment(item) {
     if (!captureEnabled || !mediaStream || capturingItemId !== item.id) return;
-    recorder = new MediaRecorder(mediaStream);
+    const preferredType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
+      .find((type) => MediaRecorder.isTypeSupported(type));
+    recorder = preferredType
+      ? new MediaRecorder(mediaStream, { mimeType: preferredType })
+      : new MediaRecorder(mediaStream);
     const segment = recorder;
     segment.addEventListener("dataavailable", (event) => {
       if (!event.data.size) return;
@@ -661,7 +690,8 @@
 
   async function uploadSegment(blob, item) {
     const body = new FormData();
-    body.append("audio", blob, "speech-segment.webm");
+    const extension = blob.type.includes("mp4") ? "mp4" : "webm";
+    body.append("audio", blob, `speech-segment.${extension}`);
     body.append("language", item.transcript_language || "auto");
     try {
       const result = await afterMutation(() => request(
@@ -683,6 +713,13 @@
 
   async function beginCapture(item) {
     capturingItemId = item.id;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      captureEnabled = false;
+      capturingItemId = 0;
+      $("#capture-state").textContent = "Audio recording is not supported by this browser";
+      notify("Speech recording requires a browser with microphone and MediaRecorder support.");
+      return;
+    }
     try {
       if (!mediaStream) {
         mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -697,11 +734,15 @@
       captureEnabled = true;
       $("#capture-state").textContent = "Microphone active · recording 25-second segments";
       startRecorderSegment(item);
-    } catch {
+    } catch (error) {
       captureEnabled = false;
       capturingItemId = 0;
+      mediaStream?.getTracks().forEach((track) => track.stop());
+      mediaStream = null;
+      audioContext = null;
+      analyser = null;
       $("#capture-state").textContent = "Microphone unavailable — paste notes or transcript below";
-      notify("Speaker capture needs microphone permission. You can still paste notes and summarize them.");
+      notify(`Could not start microphone capture: ${error.message}`);
     }
   }
 
@@ -875,8 +916,8 @@
   });
   $("#capture-toggle").addEventListener("click", () => {
     const item = currentItem();
-    if (!item || item.type !== "speech" || item.status !== "on_stage") {
-      notify("Start a speech item before capturing its transcript.");
+    if (!isSpeechOrTalk(item) || item.status !== "on_stage") {
+      notify("Start a speech or talk item before capturing its transcript.");
       return;
     }
     captureSuppressedItemId = 0;
@@ -894,7 +935,7 @@
   });
   $("#speech-finished").addEventListener("click", async () => {
     const item = currentItem();
-    if (!item || item.type !== "speech") return;
+    if (!isSpeechOrTalk(item)) return;
     captureSuppressedItemId = item.id;
     await stopCapture();
     try {
@@ -904,11 +945,7 @@
       });
       await refresh();
       $("#summary-editor").value = result.summary;
-      notify("Summary ready for operator review.");
-      if ($("#auto-speak-summary").checked) {
-        const audio = await post(`/api/live-events/${eventId}/items/${item.id}/summary/speak`);
-        await playUrl(audio.url);
-      }
+      notify("Speaker summary ready for review. The event recap is spoken at its scheduled end time.");
     } catch (error) {
       notify(error.message);
     }

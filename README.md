@@ -149,8 +149,12 @@ cancels current browser playback and signals the active response stream to stop.
    the operator must confirm **Speech finished**.
 5. AVA routes transcript-grounded summaries to Gemini when available, then
    checks that they contain 2–3 short sentences in the event language. Review/edit,
-   regenerate, discard, or explicitly speak the result. Auto-speak is off by default.
-   Summary playback and operator announcements use the session's saved voice.
+   regenerate, discard, or explicitly speak the result. Speaker summaries are
+   existing speaker recaps remain available for review. For configured event
+   types, `/api/transcribe` chunks are accumulated and a short recap is spoken
+   once the stored local end time passes. This uses the **Speak event summary**
+   setting in Live event control. Summary playback and operator announcements
+   use the session's saved voice.
    The next transition includes the reviewed summary by default; the operator can
    opt out with the transition checkbox.
    Event reports are downloadable as Markdown, PDF, or DOCX.

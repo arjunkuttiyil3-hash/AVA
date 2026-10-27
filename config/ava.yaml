@@ -105,6 +105,13 @@ speech:
   stt_model: small
   language: en
   vad_filter: true
+  summary_event_types:
+    - speech
+    - talk
+    - keynote
+    - lecture
+    - presentation
+  event_summary_check_seconds: 5
   speaker_silence_suggestion_seconds: 8
   tts_provider: edge
   voices:

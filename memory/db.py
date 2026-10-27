@@ -146,6 +146,10 @@ def initialize_database(
                 chief_guest TEXT NOT NULL DEFAULT '',
                 chief_guest_title TEXT NOT NULL DEFAULT '',
                 current_item_id INTEGER,
+                transcript TEXT NOT NULL DEFAULT '',
+                event_summary TEXT NOT NULL DEFAULT '',
+                summary_played INTEGER NOT NULL DEFAULT 0
+                    CHECK (summary_played IN (0, 1)),
                 state_version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -212,7 +216,7 @@ def initialize_database(
 
             CREATE TABLE IF NOT EXISTS event_settings (
                 session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-                auto_speak_summary INTEGER NOT NULL DEFAULT 0
+                auto_speak_summary INTEGER NOT NULL DEFAULT 1
                     CHECK (auto_speak_summary IN (0, 1))
             );
 
@@ -307,6 +311,9 @@ def initialize_database(
             "audience": "TEXT NOT NULL DEFAULT ''",
             "style": "TEXT NOT NULL DEFAULT ''",
             "special_instructions": "TEXT NOT NULL DEFAULT ''",
+            "transcript": "TEXT NOT NULL DEFAULT ''",
+            "event_summary": "TEXT NOT NULL DEFAULT ''",
+            "summary_played": "INTEGER NOT NULL DEFAULT 0",
         }.items():
             if column not in control_columns:
                 connection.execute(f"ALTER TABLE event_control ADD COLUMN {column} {definition}")

@@ -42,7 +42,16 @@ class SpeechRecognizer:
         self.compute_type = compute_type
         self.sample_rate = sample_rate
         self._model: Any = None
+        self._model_device: str | None = None
         self._model_lock = threading.Lock()
+
+    @staticmethod
+    def _is_gpu_runtime_failure(error: RuntimeError) -> bool:
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in ("cublas", "cudnn", "cuda driver version is insufficient")
+        )
 
     def _load_model(self) -> Any:
         if self._model is None:
@@ -55,7 +64,32 @@ class SpeechRecognizer:
                         device=self.device,
                         compute_type=self.compute_type,
                     )
+                    self._model_device = self.device
         return self._model
+
+    def load_model(self) -> None:
+        """Load the configured recognition model before a transcription request."""
+        try:
+            self._load_model()
+        except RuntimeError as exc:
+            if not self._is_gpu_runtime_failure(exc) or self._model_device == "cpu":
+                raise
+            logger.warning(
+                "Faster-Whisper GPU model loading failed; retrying on CPU: %s", exc
+            )
+            self._load_cpu_model()
+
+    def _load_cpu_model(self) -> None:
+        with self._model_lock:
+            if self._model_device != "cpu":
+                from faster_whisper import WhisperModel
+
+                self._model = WhisperModel(
+                    self.model_size,
+                    device="cpu",
+                    compute_type=self.compute_type,
+                )
+                self._model_device = "cpu"
 
     def transcribe(self, audio: str | np.ndarray, language: str | None = None) -> Transcription:
         """Transcribe a file or mono float audio array using VAD filtering."""
@@ -69,13 +103,22 @@ class SpeechRecognizer:
     def _transcribe(
         self, audio: str | np.ndarray, requested_language: str | None
     ) -> Transcription:
-        segments, info = self._load_model().transcribe(
-            audio,
-            language=requested_language,
-            vad_filter=self.vad_filter,
-            beam_size=5,
-        )
-        text = " ".join(segment.text.strip() for segment in segments).strip()
+        try:
+            segments, info = self._load_model().transcribe(
+                audio,
+                language=requested_language,
+                vad_filter=self.vad_filter,
+                beam_size=5,
+            )
+            text = " ".join(segment.text.strip() for segment in segments).strip()
+        except RuntimeError as exc:
+            if not self._is_gpu_runtime_failure(exc) or self._model_device == "cpu":
+                raise
+            logger.warning(
+                "Faster-Whisper GPU transcription failed; retrying on CPU: %s", exc
+            )
+            self._load_cpu_model()
+            return self._transcribe(audio, requested_language)
         if not text:
             raise ValueError("No speech was detected. Please try speaking again.")
         return Transcription(text=text, language=info.language or requested_language or "en")

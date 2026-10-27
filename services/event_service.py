@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import uuid
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,19 @@ ITEM_FIELDS = {
 }
 ITEM_STATUSES = {"pending", "arrived", "absent", "on_stage", "done", "skipped", "removed"}
 EVENT_STATUSES = {"not_started", "running", "paused", "ended"}
+SUMMARY_EVENT_TYPES = ("speech", "talk", "keynote", "lecture", "presentation")
+
+logger = logging.getLogger(__name__)
+
+
+def is_summary_event_type(
+    event_type: Any,
+    allowed_types: tuple[str, ...] | list[str] = SUMMARY_EVENT_TYPES,
+) -> bool:
+    """Match configured event types case-insensitively."""
+    return str(event_type).strip().casefold() in {
+        str(value).strip().casefold() for value in allowed_types
+    }
 
 
 class EventNotFoundError(LookupError):
@@ -217,7 +232,9 @@ class EventService:
             summaries = connection.execute(
                 """SELECT s.item_id, s.summary, s.created_at, i.person_name, i.title
                    FROM event_summaries s JOIN schedule_items i ON i.id = s.item_id
-                   WHERE s.event_id = ? ORDER BY s.id DESC""",
+                   WHERE s.event_id = ? AND lower(trim(i.type))
+                       IN ('speech', 'talk', 'keynote', 'lecture', 'presentation')
+                   ORDER BY s.id DESC""",
                 (event_id,),
             ).fetchall()
         result = dict(event)
@@ -225,6 +242,101 @@ class EventService:
         result["log"] = [dict(row) for row in logs]
         result["summaries"] = [dict(row) for row in summaries]
         return result
+
+    def append_event_transcript(
+        self,
+        event_id: int,
+        text: str,
+        allowed_types: tuple[str, ...] | list[str] = SUMMARY_EVENT_TYPES,
+    ) -> bool:
+        """Append a live transcript chunk only for an eligible running event."""
+        segment = text.strip()
+        if not segment:
+            return False
+        with connection_scope(self.database_path) as connection:
+            event = self._require_event(connection, event_id)
+            if (
+                event["status"] != "running"
+                or not is_summary_event_type(event["type"], allowed_types)
+            ):
+                return False
+            connection.execute(
+                """UPDATE event_control
+                   SET transcript = trim(transcript || ' ' || ?),
+                       state_version = state_version + 1
+                   WHERE id = ?""",
+                (segment, event_id),
+            )
+            self._audit(
+                connection,
+                event_id,
+                "event_transcript_appended",
+                {},
+                {"characters": len(segment)},
+                "operator",
+            )
+        return True
+
+    def get_due_event_summaries(
+        self,
+        allowed_types: tuple[str, ...] | list[str] = SUMMARY_EVENT_TYPES,
+        *,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get eligible running events whose stored local end time has passed."""
+        local_now = now or datetime.now().astimezone().replace(tzinfo=None)
+        if local_now.tzinfo is not None:
+            local_now = local_now.astimezone().replace(tzinfo=None)
+        allowed = {str(value).strip().casefold() for value in allowed_types}
+        if not allowed:
+            return []
+        placeholders = ",".join("?" for _ in allowed)
+        with connection_scope(self.database_path) as connection:
+            rows = connection.execute(
+                f"""SELECT e.* FROM event_control e
+                    LEFT JOIN event_settings s ON s.session_id = e.session_id
+                    WHERE e.status IN ('running', 'ended') AND e.summary_played = 0
+                      AND trim(e.transcript) != ''
+                      AND lower(trim(e.type)) IN ({placeholders})
+                      AND COALESCE(s.auto_speak_summary, 1) = 1""",
+                tuple(sorted(allowed)),
+            ).fetchall()
+        due: list[dict[str, Any]] = []
+        for row in rows:
+            event = dict(row)
+            end_time = str(event["event_end_time"] or "").strip()
+            if not end_time:
+                continue
+            try:
+                event_date = date.fromisoformat(
+                    str(event["date"]).strip() or local_now.date().isoformat()
+                )
+                end_at = datetime.combine(event_date, time.fromisoformat(end_time))
+            except ValueError:
+                logger.warning(
+                    "Skipping scheduled summary with invalid event date or end time",
+                    extra={"event_id": event["id"], "event_date": event["date"], "end_time": end_time},
+                )
+                continue
+            if local_now >= end_at:
+                due.append(event)
+        return due
+
+    def mark_event_summary_played(self, event_id: int, summary: str) -> bool:
+        """Persist the summary and atomically mark an event as already played."""
+        with connection_scope(self.database_path) as connection:
+            cursor = connection.execute(
+                """UPDATE event_control
+                   SET event_summary = ?, summary_played = 1,
+                       state_version = state_version + 1
+                   WHERE id = ? AND summary_played = 0
+                     AND COALESCE(
+                         (SELECT auto_speak_summary FROM event_settings
+                          WHERE session_id = event_control.session_id), 1
+                     ) = 1""",
+                (summary.strip(), event_id),
+            )
+        return cursor.rowcount == 1
 
     def get_script(self, event_id: int) -> dict[str, Any]:
         """Return the persisted script and its current version."""
@@ -384,11 +496,25 @@ class EventService:
             item = connection.execute(
                 "SELECT * FROM schedule_items WHERE id = ?", (item_id,)
             ).fetchone()
+            if "summary" in changes and not (
+                is_summary_event_type(changes.get("type", item["type"]))
+            ) and str(changes["summary"]).strip():
+                raise ValueError("Only speech or talk items can have a summary.")
             old = {key: item[key] for key in changes}
+            if "type" in changes and not is_summary_event_type(changes["type"]):
+                old["summary"] = item["summary"]
             connection.execute(
                 f"UPDATE schedule_items SET {', '.join(f'{key} = ?' for key in changes)} WHERE id = ?",
                 (*changes.values(), item_id),
             )
+            if "type" in changes and not is_summary_event_type(changes["type"]):
+                connection.execute(
+                    "UPDATE schedule_items SET summary = '' WHERE id = ?", (item_id,)
+                )
+                connection.execute(
+                    "DELETE FROM event_summaries WHERE event_id = ? AND item_id = ?",
+                    (event_id, item_id),
+                )
             if "summary" in changes and str(changes["summary"]).strip():
                 connection.execute(
                     """INSERT INTO event_summaries(event_id, item_id, summary)
@@ -804,7 +930,9 @@ class EventService:
         if not segment:
             raise ValueError("Transcript text cannot be empty.")
         with connection_scope(self.database_path) as connection:
-            self._require_item(connection, event_id, item_id)
+            item = self._require_item(connection, event_id, item_id)
+            if not is_summary_event_type(item["type"]):
+                raise ValueError("Only speech or talk items can have a transcript.")
             self._record_undo(connection, event_id)
             connection.execute(
                 "UPDATE schedule_items SET transcript = trim(transcript || ' ' || ?) WHERE id = ?",
@@ -817,7 +945,9 @@ class EventService:
     def save_summary(self, event_id: int, item_id: int, summary: str) -> dict[str, Any]:
         """Store a reviewed speaker summary with the schedule item."""
         with connection_scope(self.database_path) as connection:
-            self._require_item(connection, event_id, item_id)
+            item = self._require_item(connection, event_id, item_id)
+            if not is_summary_event_type(item["type"]):
+                raise ValueError("Only speech or talk items can have a summary.")
             self._record_undo(connection, event_id)
             connection.execute("UPDATE schedule_items SET summary = ? WHERE id = ?", (summary.strip(), item_id))
             connection.execute(
@@ -833,7 +963,9 @@ class EventService:
     def set_transcript(self, event_id: int, item_id: int, transcript: str) -> dict[str, Any]:
         """Replace a transcript after operator correction."""
         with connection_scope(self.database_path) as connection:
-            self._require_item(connection, event_id, item_id)
+            item = self._require_item(connection, event_id, item_id)
+            if not is_summary_event_type(item["type"]):
+                raise ValueError("Only speech or talk items can have a transcript.")
             self._record_undo(connection, event_id)
             connection.execute(
                 "UPDATE schedule_items SET transcript = ? WHERE id = ?",
@@ -853,13 +985,13 @@ class EventService:
             )
 
     def get_auto_speak(self, session_id: str) -> bool:
-        """Read summary auto-speak preference; operator approval is the default."""
+        """Read summary auto-speak preference; enable it by default."""
         with connection_scope(self.database_path) as connection:
             row = connection.execute(
                 "SELECT auto_speak_summary FROM event_settings WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
-        return bool(row["auto_speak_summary"]) if row else False
+        return bool(row["auto_speak_summary"]) if row else True
 
     def replan_upcoming(self, event_id: int) -> str:
         """Construct a deterministic transition from live current/next schedule facts."""
@@ -880,7 +1012,7 @@ class EventService:
         if next_item["designation"]:
             presentation += f", {next_item['designation']}"
         gratitude = ""
-        if current and current["type"] == "speech" and current["summary"]:
+        if current and is_summary_event_type(current["type"]) and current["summary"]:
             speaker = current["person_name"].strip() or "our speaker"
             topic = current["summary"].split(".")[0].strip()
             gratitude = f"Thank you, {speaker}, for those insights on {topic}. "
@@ -897,7 +1029,7 @@ class EventService:
         """Create a short stage announcement from the live current and prior items."""
         language = event.get("language", "en")
         gratitude = ""
-        if previous_item and previous_item.get("type") == "speech":
+        if previous_item and is_summary_event_type(previous_item.get("type")):
             speaker = str(previous_item.get("person_name") or "").strip()
             summary = str(previous_item.get("summary") or "").strip()
             topic = summary.split(".")[0].strip() if include_summary and summary else ""
@@ -956,7 +1088,7 @@ class EventService:
                 f"{item['person_name']} | {item['designation']} | {item['status']} | "
                 f"{item['planned_duration']} |"
             )
-            if item["summary"]:
+            if item["summary"] and is_summary_event_type(item["type"]):
                 lines.extend(["", f"### {item['person_name'] or item['title']} — summary", "", item["summary"]])
         lines.extend(["", "## Change log", ""])
         for item in reversed(event["log"]):

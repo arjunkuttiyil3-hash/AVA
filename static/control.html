@@ -77,7 +77,7 @@
             <h3>Add schedule item / late arrival</h3>
             <label>Title<input name="title" required maxlength="200" placeholder="e.g. Guest address"></label>
             <div class="form-two">
-              <label>Type<select name="type"><option value="speech">Speech</option><option value="welcome">Welcome</option><option value="performance">Performance</option><option value="break">Break</option><option value="vote_of_thanks">Vote of thanks</option><option value="other">Other</option></select></label>
+              <label>Type<select name="type"><option value="speech">Speech</option><option value="talk">Talk</option><option value="welcome">Welcome</option><option value="performance">Performance</option><option value="break">Break</option><option value="vote_of_thanks">Vote of thanks</option><option value="other">Other</option></select></label>
               <label>Insert at position<input name="position" type="number" min="1" placeholder="End of schedule"></label>
             </div>
             <div class="form-two">
@@ -103,10 +103,10 @@
           </label>
         </section>
 
-        <section class="control-card speech-card">
+        <section class="control-card speech-card" hidden>
           <div class="control-card-heading">
             <div><span class="panel-kicker">SPEAKER CAPTURE</span><h2>Speech notes and summary</h2></div>
-            <span id="capture-state" class="muted-label">Capture starts when a speech goes on stage</span>
+            <span id="capture-state" class="muted-label">Capture starts when a speech or talk goes on stage</span>
           </div>
           <div class="capture-actions">
             <button id="capture-toggle" class="secondary-button" type="button">Start / resume capture</button>
@@ -149,11 +149,11 @@
             <a id="export-pdf" class="secondary-button" href="#">PDF</a>
             <a id="export-docx" class="secondary-button" href="#">DOCX</a>
           </div>
-          <label class="transition-toggle auto-speak"><input id="auto-speak-summary" type="checkbox"> Auto-speak summary (off by default)</label>
+          <label class="transition-toggle auto-speak"><input id="auto-speak-summary" type="checkbox" checked> Speak event summary at its scheduled end time (on by default)</label>
         </section>
         <section class="control-card">
           <div class="control-card-heading"><div><span class="panel-kicker">SPEECH SUMMARIES</span><h2>Speaker recap</h2></div></div>
-          <div id="summary-list" class="summary-list"><p class="muted-label">Summaries appear after a speech is finished.</p></div>
+          <div id="summary-list" class="summary-list"><p class="muted-label">Summaries appear after a speech or talk is finished.</p></div>
         </section>
         <section class="control-card">
           <div class="control-card-heading"><div><span class="panel-kicker">AUDIT TRAIL</span><h2>Recent changes</h2></div></div>
@@ -169,7 +169,7 @@
         </div>
         <label>Program title<input name="title" required maxlength="200"></label>
         <div class="form-two">
-          <label>Type<select name="type"><option value="speech">Speech</option><option value="welcome">Welcome</option><option value="performance">Performance</option><option value="break">Break</option><option value="vote_of_thanks">Vote of thanks</option><option value="other">Other</option></select></label>
+          <label>Type<select name="type"><option value="speech">Speech</option><option value="talk">Talk</option><option value="welcome">Welcome</option><option value="performance">Performance</option><option value="break">Break</option><option value="vote_of_thanks">Vote of thanks</option><option value="other">Other</option></select></label>
           <label>Scheduled time<input name="scheduled_time" type="time"></label>
         </div>
         <div class="form-two">

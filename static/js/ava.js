@@ -718,10 +718,16 @@
     const body = new FormData();
     body.append("audio", blob, "recording.webm");
     body.append("language", $("#language-select").value);
+    const activeEventId = Number(localStorage.getItem("ava-event-id")) || 0;
+    if (activeEventId) body.append("event_id", String(activeEventId));
     try {
       const response = await fetch("/api/transcribe", { method: "POST", body });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.detail || "Speech recognition is unavailable.");
+      if (!response.ok) {
+        throw new Error(
+          result.detail || result.message || "Speech recognition is unavailable.",
+        );
+      }
       if (continuous) {
         if (result.text) sendMessage(result.text);
       } else {

@@ -39,9 +39,11 @@ from orchestrator.router import ModelRouter
 from services.event_service import (
     EventNotFoundError,
     EventService,
+    SUMMARY_EVENT_TYPES,
     blocked_names,
     contains_blocked_name,
     drop_blocked_name_sentences,
+    is_summary_event_type,
     parse_operator_command,
 )
 from modules.speaker_capture import SpeakerCapture
@@ -50,6 +52,97 @@ from llm import health_check as gemini_health_check
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("ava")
+
+
+async def _broadcast_session_message(
+    application: FastAPI, session_id: str, payload: dict[str, Any]
+) -> int:
+    """Queue a message for each live WebSocket subscribed to a session."""
+    delivered = 0
+    subscribers = application.state.event_subscribers.get(session_id, set())
+    for queue in tuple(subscribers):
+        try:
+            await queue.put(payload)
+            delivered += 1
+        except RuntimeError:
+            logger.warning("Session subscriber closed", extra={"session_id": session_id})
+    return delivered
+
+
+async def _run_event_summary_scheduler(application: FastAPI) -> None:
+    """Generate and broadcast one spoken recap when an eligible event ends."""
+    service: EventService = application.state.event_service
+    pipeline: ConversationPipeline = application.state.pipeline
+    allowed_types: tuple[str, ...] = application.state.summary_event_types
+    interval = application.state.event_summary_check_seconds
+    while True:
+        try:
+            events = await asyncio.to_thread(
+                service.get_due_event_summaries,
+                allowed_types,
+            )
+            for event in events:
+                listeners = application.state.event_summary_subscribers.get(
+                    event["session_id"], set()
+                )
+                if not listeners:
+                    continue
+                transcript = str(event["transcript"] or "").strip()
+                if len(transcript.split()) < 8:
+                    continue
+                summary = await asyncio.to_thread(
+                    SpeakerSummarizer(pipeline.router).summarize,
+                    transcript,
+                    language=event["language"],
+                    speaker_name="",
+                )
+                if summary in {
+                    "The summary could not be generated.",
+                    "ട്രാൻസ്ക്രിപ്റ്റ് വളരെ ചുരുങ്ങിയതിനാൽ സംഗ്രഹം തയ്യാറാക്കാനായില്ല.",
+                }:
+                    logger.info(
+                        "Skipping event summary because the transcript was not summarizable",
+                        extra={"event_id": event["id"]},
+                    )
+                    continue
+                audio = await pipeline.synthesizer.synthesize(
+                    summary,
+                    event["language"],
+                    cache_version=f"event-summary-{event['state_version']}",
+                )
+                still_due = await asyncio.to_thread(
+                    service.get_due_event_summaries,
+                    allowed_types,
+                )
+                if not any(due["id"] == event["id"] for due in still_due):
+                    continue
+                listeners = application.state.event_summary_subscribers.get(
+                    event["session_id"], set()
+                )
+                listener = next(iter(listeners), None)
+                if listener is None:
+                    continue
+                await listener.put(
+                    {
+                        "type": "event_summary_audio",
+                        "event_id": event["id"],
+                        "url": f"/api/audio/{audio.name}",
+                        "summary": summary,
+                        "language": event["language"],
+                    }
+                )
+                if not await asyncio.to_thread(
+                    service.mark_event_summary_played, event["id"], summary
+                ):
+                    logger.error(
+                        "Summary audio queued but event was already marked played",
+                        extra={"event_id": event["id"]},
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Event summary scheduler iteration failed")
+        await asyncio.sleep(interval)
 
 
 class SessionResponse(BaseModel):
@@ -203,16 +296,40 @@ async def lifespan(application: FastAPI):
     application.state.pipeline = build_pipeline(settings)
     application.state.event_service = EventService(settings.database_path)
     application.state.event_subscribers = {}
+    application.state.event_summary_subscribers = {}
     application.state.recognizer = SpeechRecognizer(
         model_size=str(settings.speech.get("stt_model", "small")),
         language=str(settings.speech.get("language", "en")),
         vad_filter=bool(settings.speech.get("vad_filter", True)),
     )
+    configured_summary_types = settings.speech.get(
+        "summary_event_types", list(SUMMARY_EVENT_TYPES)
+    )
+    if not isinstance(configured_summary_types, list) or any(
+        not isinstance(value, str) or not value.strip()
+        for value in configured_summary_types
+    ):
+        raise ValueError("speech.summary_event_types must be a list of non-empty strings.")
+    application.state.summary_event_types = tuple(
+        value.strip().casefold() for value in configured_summary_types
+    )
+    application.state.event_summary_check_seconds = float(
+        settings.speech.get("event_summary_check_seconds", 5)
+    )
+    if application.state.event_summary_check_seconds <= 0:
+        raise ValueError("speech.event_summary_check_seconds must be positive.")
     logger.info("AVA initialized")
     application.state.health = await asyncio.to_thread(collect_health, settings)
     application.state.health_checked_at = 0.0
     await asyncio.to_thread(log_health, application.state.health)
-    yield
+    application.state.event_summary_task = asyncio.create_task(
+        _run_event_summary_scheduler(application)
+    )
+    try:
+        yield
+    finally:
+        application.state.event_summary_task.cancel()
+        await asyncio.gather(application.state.event_summary_task, return_exceptions=True)
 
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
@@ -227,18 +344,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     async def broadcast_event(event: dict[str, Any], *, action: str = "updated") -> None:
         """Notify every connected UI for the event's session with its new version."""
-        subscribers = application.state.event_subscribers.get(event["session_id"], set())
         payload = {
             "type": "event_state_changed",
             "action": action,
             "event": event,
             "state_version": event["state_version"],
         }
-        for queue in tuple(subscribers):
-            try:
-                await queue.put(payload)
-            except RuntimeError:
-                logger.warning("Event update subscriber closed", extra={"event_id": event["id"]})
+        await _broadcast_session_message(application, event["session_id"], payload)
 
     @application.exception_handler(Exception)
     async def friendly_server_error(request: Request, exc: Exception) -> JSONResponse:
@@ -323,14 +435,41 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
         return SessionResponse(session_id=session_id)
 
-    @application.post("/api/transcribe")
+    @application.post("/api/transcribe", response_model=None)
     async def transcribe_audio(
         audio: UploadFile = File(...),
         language: str = Form("en"),
-    ) -> dict[str, str]:
+        event_id: int | None = Form(None),
+        item_id: int | None = Form(None),
+    ) -> dict[str, Any] | JSONResponse:
         """Transcribe one browser-recorded audio segment using Faster-Whisper."""
-        if language not in {"en", "ml"}:
-            raise HTTPException(status_code=422, detail="Language must be 'en' or 'ml'.")
+        if language not in {"en", "ml", "auto"}:
+            raise HTTPException(status_code=422, detail="Language must be en, ml, or auto.")
+        event = None
+        item = None
+        if item_id is not None and event_id is None:
+            raise HTTPException(status_code=422, detail="item_id requires event_id.")
+        if event_id is not None:
+            try:
+                event = await asyncio.to_thread(
+                    application.state.event_service.get_event, event_id
+                )
+            except EventNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if item_id is not None:
+                item = next(
+                    (entry for entry in event["items"] if entry["id"] == item_id),
+                    None,
+                )
+                if item is None:
+                    raise HTTPException(status_code=404, detail="Schedule item not found.")
+                if not is_summary_event_type(
+                    item["type"], application.state.summary_event_types
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Transcription is only available for configured speech or presentation items.",
+                    )
         contents = await audio.read(25 * 1024 * 1024 + 1)
         if not contents:
             raise HTTPException(status_code=400, detail="Audio recording is empty.")
@@ -346,16 +485,60 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     recording.write(contents)
 
             await asyncio.to_thread(write_recording)
-            result = await asyncio.to_thread(
-                application.state.recognizer.transcribe, temporary_name, language
-            )
-            return {"text": result.text, "language": result.language}
+            recognizer: SpeechRecognizer = application.state.recognizer
+            await asyncio.to_thread(recognizer.load_model)
+            if language == "auto":
+                result = await asyncio.to_thread(
+                    recognizer.transcribe_detect, temporary_name
+                )
+            else:
+                result = await asyncio.to_thread(
+                    recognizer.transcribe, temporary_name, language
+                )
+            event_transcript_stored = False
+            if event_id is not None and event is not None:
+                event_transcript_stored = await asyncio.to_thread(
+                    application.state.event_service.append_event_transcript,
+                    event_id,
+                    result.text,
+                    application.state.summary_event_types,
+                )
+                if item_id is not None:
+                    updated = await asyncio.to_thread(
+                        application.state.event_service.append_transcript,
+                        event_id,
+                        item_id,
+                        result.text,
+                    )
+                    await broadcast_event(updated, action="transcript_appended")
+                elif event_transcript_stored:
+                    updated = await asyncio.to_thread(
+                        application.state.event_service.get_event, event_id
+                    )
+                    await broadcast_event(updated, action="event_transcript_appended")
+            response: dict[str, Any] = {
+                "text": result.text,
+                "language": result.language,
+            }
+            if event_id is not None:
+                response["event_transcript_stored"] = event_transcript_stored
+            return response
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            logger.exception("Speech recognition failed")
-            raise HTTPException(
+            logger.exception("Speech model loading or transcription failed")
+            return JSONResponse(
                 status_code=503,
-                detail="Speech recognition is unavailable. Check the STT model and audio setup.",
-            ) from exc
+                content={
+                    "error": "speech_recognition_unavailable",
+                    "message": (
+                        "Speech recognition could not load or transcribe this audio. "
+                        "Check the Faster-Whisper/PyAV versions, model files, and audio format."
+                    ),
+                    "cause": type(exc).__name__,
+                    "diagnostic": str(exc)[:500],
+                },
+            )
         finally:
             Path(temporary_name).unlink(missing_ok=True)
 
@@ -440,7 +623,14 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     pipeline.stop_speaking(session_id)
                     await outgoing.put({"type": "speech_stop"})
                     continue
-                if payload.get("type") in {"subscribe_event", "event_command"}:
+                if payload.get("type") == "subscribe_event":
+                    if payload.get("client") == "control":
+                        summary_subscribers = application.state.event_summary_subscribers.setdefault(
+                            session_id, set()
+                        )
+                        summary_subscribers.add(outgoing)
+                    continue
+                if payload.get("type") == "event_command":
                     continue
                 await incoming.put(payload)
         except WebSocketDisconnect:
@@ -459,6 +649,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             subscribers.discard(outgoing)
             if not subscribers:
                 application.state.event_subscribers.pop(session_id, None)
+            summary_subscribers = application.state.event_summary_subscribers.get(session_id)
+            if summary_subscribers is not None:
+                summary_subscribers.discard(outgoing)
+                if not summary_subscribers:
+                    application.state.event_summary_subscribers.pop(session_id, None)
             for task in (processor, sender):
                 task.cancel()
             await asyncio.gather(processor, sender, return_exceptions=True)
@@ -1402,13 +1597,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             generated = drop_blocked_name_sentences(generated, forbidden)
             previous_speaker = (
                 str(previous_item.get("person_name") or "").strip().casefold()
-                if previous_item and previous_item.get("type") == "speech"
+                if previous_item and is_summary_event_type(
+                    previous_item.get("type"), application.state.summary_event_types
+                )
                 else ""
             )
             thanks_marker = "നന്ദി" if updated["language"] == "ml" else "thank you"
             thanks_missing = bool(
                 previous_item
-                and previous_item.get("type") == "speech"
+                and is_summary_event_type(
+                    previous_item.get("type"), application.state.summary_event_types
+                )
                 and (
                     thanks_marker not in generated.casefold()
                     or (
@@ -1638,6 +1837,21 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         """Transcribe one browser-recorded segment in a worker thread."""
         if language not in {"en", "ml", "auto"}:
             raise HTTPException(status_code=422, detail="Language must be en, ml, or auto.")
+        try:
+            event = await asyncio.to_thread(
+                application.state.event_service.get_event, event_id
+            )
+        except EventNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        item = next((entry for entry in event["items"] if entry["id"] == item_id), None)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Schedule item not found.")
+        if not is_summary_event_type(
+            item["type"], application.state.summary_event_types
+        ):
+            raise HTTPException(
+                status_code=422, detail="Audio capture is only available for speech or talk items."
+            )
         contents = await audio.read(25 * 1024 * 1024 + 1)
         if not contents or len(contents) > 25 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Audio segment is empty or exceeds 25 MB.")
@@ -1654,10 +1868,27 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 ).transcribe_and_store,
                 event_id, item_id, temporary_name, language,
             )
+            event = await asyncio.to_thread(
+                application.state.event_service.get_event, event_id
+            )
+            if is_summary_event_type(
+                event["type"], application.state.summary_event_types
+            ):
+                await asyncio.to_thread(
+                    application.state.event_service.append_event_transcript,
+                    event_id,
+                    result["text"],
+                    application.state.summary_event_types,
+                )
+                result["event"] = await asyncio.to_thread(
+                    application.state.event_service.get_event, event_id
+                )
             await broadcast_event(result["event"], action="transcript_appended")
             return {"text": result["text"], "language": result["language"]}
         except EventNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception("Speaker capture transcription failed")
             raise HTTPException(
@@ -1678,8 +1909,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         except (EventNotFoundError, StopIteration) as exc:
             raise HTTPException(status_code=404, detail="Speech item not found.") from exc
         notes = str(payload.get("notes", "")).strip()
-        if item["type"] != "speech":
-            raise HTTPException(status_code=422, detail="Only speech items can be summarized.")
+        if not is_summary_event_type(
+            item["type"], application.state.summary_event_types
+        ):
+            raise HTTPException(status_code=422, detail="Only speech or talk items can be summarized.")
         language = str(payload.get("language", event["language"]))
         if language not in {"en", "ml"}:
             raise HTTPException(status_code=422, detail="Summary language must be en or ml.")
@@ -1711,8 +1944,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             item = next(item for item in event["items"] if item["id"] == item_id)
         except (EventNotFoundError, StopIteration) as exc:
             raise HTTPException(status_code=404, detail="Speech item not found.") from exc
-        if item["type"] != "speech":
-            raise HTTPException(status_code=422, detail="Only speech items can be summarized.")
+        if not is_summary_event_type(
+            item["type"], application.state.summary_event_types
+        ):
+            raise HTTPException(status_code=422, detail="Only speech or talk items can be summarized.")
         language = payload.get("language", event["language"])
         if language not in {"en", "ml"}:
             raise HTTPException(status_code=422, detail="Summary language must be en or ml.")
@@ -1738,7 +1973,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         except EventNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         item = next((entry for entry in event["items"] if entry["id"] == item_id), None)
-        if item is None or not item["summary"]:
+        if (
+            item is None
+            or not is_summary_event_type(
+                item["type"], application.state.summary_event_types
+            )
+            or not item["summary"]
+        ):
             raise HTTPException(status_code=404, detail="No speaker summary is available.")
         language = event["language"]
         preferences = await asyncio.to_thread(
@@ -1764,7 +2005,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     async def update_event_settings(
         session_id: str, payload: dict[str, bool] = Body(...)
     ) -> dict[str, bool]:
-        enabled = bool(payload.get("auto_speak_summary", False))
+        enabled = bool(payload.get("auto_speak_summary", True))
         await asyncio.to_thread(
             application.state.event_service.set_auto_speak, session_id, enabled
         )

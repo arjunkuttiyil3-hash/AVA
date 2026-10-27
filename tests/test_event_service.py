@@ -88,6 +88,32 @@ def test_late_arrival_can_be_inserted_at_requested_position(tmp_path: Path) -> N
     ]
 
 
+def test_talks_support_transcripts_and_summaries_only_while_talk_type(tmp_path: Path) -> None:
+    service, event_id = make_service(tmp_path)
+    talk_event = service.add_item(
+        event_id, {"title": "Community talk", "type": "talk", "person_name": "Asha"}
+    )
+    talk = next(item for item in talk_event["items"] if item["type"] == "talk")
+    service.append_transcript(event_id, talk["id"], "The speaker discussed local gardens.")
+    service.save_summary(event_id, talk["id"], "Asha discussed local gardens.")
+
+    saved = service.get_event(event_id)
+    assert next(item for item in saved["items"] if item["id"] == talk["id"])["summary"]
+    assert any(summary["item_id"] == talk["id"] for summary in saved["summaries"])
+
+    performance = next(item for item in saved["items"] if item["type"] == "performance")
+    with pytest.raises(ValueError, match="Only speech or talk"):
+        service.append_transcript(event_id, performance["id"], "A song was performed.")
+    with pytest.raises(ValueError, match="Only speech or talk"):
+        service.save_summary(event_id, performance["id"], "A short summary.")
+
+    service.update_item(event_id, talk["id"], {"type": "performance"})
+    changed = service.get_event(event_id)
+    changed_talk = next(item for item in changed["items"] if item["id"] == talk["id"])
+    assert changed_talk["summary"] == ""
+    assert all(summary["item_id"] != talk["id"] for summary in changed["summaries"])
+
+
 def test_skip_current_advances_and_can_move_item_to_end(tmp_path: Path) -> None:
     service, event_id = make_service(tmp_path)
     initial = service.get_event(event_id)

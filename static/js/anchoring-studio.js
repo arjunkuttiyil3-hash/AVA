@@ -24,6 +24,7 @@
     ["participant", "Participant"],
     ["performance", "Performance"],
     ["speech", "Speech"],
+    ["talk", "Talk"],
     ["break", "Break"],
     ["announcement", "Announcement"],
     ["other", "Other"],
@@ -54,6 +55,7 @@
       const result = await api.transcribeSpeech(
         blob,
         form.elements.namedItem("language").value || "en",
+        state.event?.id,
       );
       if (!result.text.trim()) {
         throw new Error("No speech was recognized. Try a clearer or longer recording.");
@@ -319,7 +321,7 @@
       itemList.scrollIntoView({ behavior: "smooth", block: "center" });
       return false;
     }
-    if (!items.some((item) => ["participant", "performance", "speech"].includes(item.type))) {
+    if (!items.some((item) => ["participant", "performance", "speech", "talk"].includes(item.type))) {
       setError($("#studio-validation-error"), "Add at least one participant, speaker, or performer to the running order.");
       return false;
     }

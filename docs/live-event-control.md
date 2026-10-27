@@ -92,8 +92,9 @@ details. Saving and reopening the event preserves the entered schedule order.
 
 ## Speaker capture and summary workflow
 
-When a speech item becomes `on_stage`, `/control` requests browser microphone
-permission and records independently decodable WebM segments every 25 seconds.
+When a speech or talk item becomes `on_stage`, `/control` requests browser
+microphone permission and records independently decodable audio segments every
+25 seconds.
 Each segment is uploaded separately; transcription runs via `asyncio.to_thread`
 and Faster-Whisper's VAD filter. A server-side microphone is not required. If
 the browser mic is unavailable, operators can paste notes or corrected text.
@@ -102,7 +103,8 @@ Malayalam transcription is editable because recognition accuracy may be lower.
 Eight seconds of low input audio (configurable in `config/ava.yaml`) or a
 transcribed “thank you” cue only reveals a suggestion. It never finishes a
 speech without operator confirmation. On confirmation, AVA summarizes the
-transcript in 2–3 short sentences; long transcripts use chunk summaries before
+transcript in 2–3 short sentences; summaries are restricted to speech and talk
+schedule items. Long transcripts use chunk summaries before
 the final summary. `speaker_summary` is routed to Gemini when available, with
 the configured template backend as the resource/service fallback. The summarizer
 is instructed to use transcript facts only and validates the requested language,
@@ -111,10 +113,19 @@ generation is attempted using the transcript (or its chunk summaries), never the
 rejected draft. Empty/very short transcripts produce an explicit “summary could
 not be generated” message.
 
-The generated summary remains editable. **Speak it** uses browser playback;
-**Auto-speak summary** is an explicit opt-in and defaults off. The operator may
-include the summary in the transition to the next eligible schedule item; this
-is enabled by default and can be unchecked for an individual transition.
+The generated speaker summary remains editable. **Speak it** uses browser
+playback. For configured event types, transcript chunks submitted to
+`/api/transcribe` are also stored on the live event. At the event's stored local
+end date/time, a concise transcript-grounded recap is synthesized and sent once
+to the connected control page. **Speak event summary at its scheduled end time**
+is on by default and can be turned off in the control panel; empty transcripts
+and other event types are skipped. Eligible types and scheduler poll interval
+are configurable with `speech.summary_event_types` and
+`speech.event_summary_check_seconds` in `config/ava.yaml`. End times are compared
+as local wall-clock date/time values, matching the event date and time fields.
+The operator may include an individual speaker summary in the transition to the
+next eligible schedule item; this is enabled by default and can be unchecked for
+an individual transition.
 Markdown export is built in; PDF and DOCX use ReportLab and python-docx from
 `requirements.txt`.
 

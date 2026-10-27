@@ -29,6 +29,8 @@
     if (!response.ok) {
       const message = typeof result.detail === "string"
         ? result.detail
+        : typeof result.message === "string"
+          ? result.message
         : `Request failed (${response.status}).`;
       throw new Error(message);
     }
@@ -74,13 +76,14 @@
         timeoutMs: 90_000,
       },
     ),
-    transcribeSpeech: (audio, language) => {
+    transcribeSpeech: (audio, language, eventId = 0) => {
       const body = new FormData();
       const extension = audio.type.includes("mp4") ? "mp4"
         : audio.type.includes("ogg") ? "ogg"
           : "webm";
       body.append("audio", audio, `anchoring-speech.${extension}`);
       body.append("language", language);
+      if (eventId) body.append("event_id", String(eventId));
       return request("/api/transcribe", { method: "POST", body, timeoutMs: 90_000 });
     },
     analyzeSpeech: (eventId, transcript, language) => request(

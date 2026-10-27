@@ -249,9 +249,12 @@ def test_live_event_updates_broadcast_to_two_websocket_clients(
             assert "# Speaker event" in markdown.text
             assert pdf.content.startswith(b"%PDF-")
             assert docx.content.startswith(b"PK")
-            assert client.get(f"/api/event/settings/{session_id}").json() == {
+            settings_url = f"/api/event/settings/{session_id}"
+            assert client.get(settings_url).json() == {"auto_speak_summary": True}
+            assert client.put(settings_url, json={"auto_speak_summary": False}).json() == {
                 "auto_speak_summary": False
             }
+            assert client.get(settings_url).json() == {"auto_speak_summary": False}
             for websocket in (control, main):
                 update = websocket.receive_json()
                 assert update["type"] == "event_state_changed"
@@ -752,6 +755,80 @@ def test_finished_speaker_summary_is_saved_and_used_in_next_transition(
     )
     assert summary in transition_prompt
     assert transition_response.json()["text"].startswith("Thank you, Anjali")
+
+
+def test_talk_items_can_be_summarized_but_other_types_cannot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from interface import api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "collect_health",
+        lambda settings: {
+            "gemini": {"available": True, "configured": True, "message": "ok"},
+            "ffmpeg": {"available": True, "message": "ok"},
+            "microphone": {"available": True, "message": "ok"},
+            "database": {"available": True, "message": str(settings.database_path)},
+        },
+    )
+    settings = AppSettings(
+        config_path=tmp_path / "ava.yaml",
+        memory={"database_path": str(tmp_path / "talk-summary.sqlite3")},
+        llm={"routes": {"default": {"backend": "template"}}},
+        speech={"cache_dir": str(tmp_path / "audio")},
+        robot={"mode": "simulated"},
+    )
+    application = create_app(settings)
+    summary = "Asha described the community garden. She thanked volunteers for their support."
+    decision = SimpleNamespace(backend="template", model="test")
+
+    def fake_stream(
+        task: str, language: str, messages: list[dict[str, str]]
+    ) -> tuple[list[str], SimpleNamespace]:
+        _ = (language, messages)
+        assert task == "speaker_summary"
+        return [summary], decision
+
+    with TestClient(application) as client:
+        application.state.pipeline.router.stream = fake_stream
+        session_id = client.post("/api/sessions").json()["session_id"]
+        event = client.post(
+            "/api/events",
+            json={
+                "session_id": session_id,
+                "name": "Community event",
+                "schedule": [
+                    {"title": "Community talk", "type": "talk", "participant": "Asha"},
+                    {"title": "Music", "type": "performance"},
+                ],
+            },
+        ).json()
+        talk, performance = application.state.event_service.get_event(event["id"])["items"]
+
+        transcript_response = client.put(
+            f"/api/live-events/{event['id']}/items/{talk['id']}/transcript",
+            json={
+                "text": "Asha described the community garden and thanked volunteers for their support."
+            },
+        )
+        talk_response = client.post(
+            f"/api/live-events/{event['id']}/items/{talk['id']}/finish"
+        )
+        performance_response = client.post(
+            f"/api/live-events/{event['id']}/items/{performance['id']}/finish"
+        )
+        capture_response = client.post(
+            f"/api/live-events/{event['id']}/items/{performance['id']}/capture",
+            files={"audio": ("sample.webm", b"audio", "audio/webm")},
+            data={"language": "auto"},
+        )
+
+    assert transcript_response.status_code == 200
+    assert talk_response.status_code == 200
+    assert talk_response.json()["summary"] == summary
+    assert performance_response.status_code == 422
+    assert capture_response.status_code == 422
 
 
 def test_structured_script_generation_protects_hand_edited_segments(
