@@ -113,6 +113,19 @@ def test_talks_support_transcripts_and_summaries_only_while_talk_type(tmp_path: 
     assert changed_talk["summary"] == ""
     assert all(summary["item_id"] != talk["id"] for summary in changed["summaries"])
 
+    announcement_event = service.add_item(
+        event_id, {"title": "Safety announcement", "type": "announcement"}
+    )
+    announcement = next(
+        item for item in announcement_event["items"] if item["type"] == "announcement"
+    )
+    service.append_transcript(event_id, announcement["id"], "Please keep the exits clear.")
+    service.save_summary(event_id, announcement["id"], "Guests were reminded to keep exits clear.")
+    assert next(
+        item for item in service.get_event(event_id)["items"]
+        if item["id"] == announcement["id"]
+    )["summary"] == "Guests were reminded to keep exits clear."
+
 
 def test_skip_current_advances_and_can_move_item_to_end(tmp_path: Path) -> None:
     service, event_id = make_service(tmp_path)
@@ -143,14 +156,62 @@ def test_restore_moves_a_late_item_to_requested_position(tmp_path: Path) -> None
     assert restored["items"][1]["status"] == "pending"
 
 
-def test_ended_event_rejects_new_items_and_resume(tmp_path: Path) -> None:
+def test_ended_event_can_be_edited_without_restarting(tmp_path: Path) -> None:
     service, event_id = make_service(tmp_path)
-    service.update_event(event_id, {"status": "ended"})
+    ended = service.update_event(event_id, {"status": "ended"})
+    first_item = ended["items"][0]
 
-    with pytest.raises(ValueError, match="after the event has ended"):
-        service.add_item(event_id, {"title": "Late item"})
+    updated = service.update_event(event_id, {"name": "Revised event"})
+    updated = service.update_item(event_id, first_item["id"], {"title": "Revised opening"})
+    updated = service.add_item(event_id, {"title": "Added after event"})
+    updated = service.reorder(
+        event_id, [item["id"] for item in reversed(updated["items"])]
+    )
+    updated = service.delete_item(event_id, first_item["id"])
+
+    assert updated["status"] == "ended"
+    assert updated["name"] == "Revised event"
+    assert next(item for item in updated["items"] if item["id"] == first_item["id"])[
+        "status"
+    ] == "removed"
+    with pytest.raises(ValueError, match="cannot be restarted"):
+        service.update_event(event_id, {"status": "running"})
     with pytest.raises(ValueError, match="cannot be resumed"):
         service.start(event_id)
+    with pytest.raises(ValueError, match="cannot be advanced"):
+        service.advance(event_id)
+
+
+def test_session_event_lookup_prefers_the_active_event(tmp_path: Path) -> None:
+    service, first_event_id = make_service(tmp_path)
+    first_event = service.get_event(first_event_id)
+    second_event = service.create_event(
+        first_event["session_id"],
+        name="Second event",
+        schedule=[{"title": "Second event opening"}],
+    )
+    repository = MemoryRepository(service.database_path)
+    repository.set_active_state(first_event["session_id"], event_id=first_event_id)
+
+    selected = service.get_for_session(first_event["session_id"])
+
+    assert second_event["id"] > first_event_id
+    assert selected is not None
+    assert selected["id"] == first_event_id
+
+
+def test_deferred_start_waits_for_program_time_to_put_item_on_stage(tmp_path: Path) -> None:
+    service, event_id = make_service(tmp_path)
+
+    started = service.start(event_id, defer_first_item=True)
+
+    assert started["status"] == "running"
+    assert started["current_item_id"] is None
+    assert all(item["status"] == "pending" for item in started["items"])
+
+    first_program = service.advance(event_id, item_id=started["items"][0]["id"])
+    assert first_program["current_item_id"] == started["items"][0]["id"]
+    assert first_program["items"][0]["status"] == "on_stage"
 
 
 def test_cache_key_changes_with_event_state_version(tmp_path: Path) -> None:

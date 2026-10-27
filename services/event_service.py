@@ -25,7 +25,7 @@ ITEM_FIELDS = {
 }
 ITEM_STATUSES = {"pending", "arrived", "absent", "on_stage", "done", "skipped", "removed"}
 EVENT_STATUSES = {"not_started", "running", "paused", "ended"}
-SUMMARY_EVENT_TYPES = ("speech", "talk", "keynote", "lecture", "presentation")
+SUMMARY_EVENT_TYPES = ("speech", "talk", "announcement", "keynote", "lecture", "presentation")
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +208,14 @@ class EventService:
         """Return the live event associated with a conversation session."""
         with connection_scope(self.database_path) as connection:
             row = connection.execute(
-                "SELECT id FROM event_control WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                """SELECT event_control.id FROM event_control
+                   LEFT JOIN sessions ON sessions.id = event_control.session_id
+                   WHERE event_control.session_id = ?
+                   ORDER BY CASE
+                       WHEN event_control.id = sessions.active_event_id THEN 0
+                       ELSE 1
+                   END, event_control.id DESC
+                   LIMIT 1""",
                 (session_id,),
             ).fetchone()
         return self.get_event(int(row["id"])) if row else None
@@ -422,8 +429,12 @@ class EventService:
             raise ValueError("Event name cannot be empty.")
         with connection_scope(self.database_path) as connection:
             event = self._require_event(connection, event_id)
-            if event["status"] == "ended" and changes != {"status": "ended"}:
-                raise ValueError("An ended event cannot be changed.")
+            if (
+                event["status"] == "ended"
+                and "status" in changes
+                and changes["status"] != "ended"
+            ):
+                raise ValueError("An ended event cannot be restarted.")
             old = {key: event[key] for key in changes}
             self._record_undo(connection, event_id)
             columns = ", ".join(f"{key} = ?" for key in changes)
@@ -444,9 +455,7 @@ class EventService:
         """Insert a validated schedule item at a position in the live schedule."""
         self._validate_item(item)
         with connection_scope(self.database_path) as connection:
-            event = self._require_event(connection, event_id)
-            if event["status"] == "ended":
-                raise ValueError("Cannot add a schedule item after the event has ended.")
+            self._require_event(connection, event_id)
             self._record_undo(connection, event_id)
             row = connection.execute(
                 "SELECT COALESCE(MAX(order_index), -1) + 1 AS next FROM schedule_items WHERE event_id = ?",
@@ -489,8 +498,11 @@ class EventService:
         self._validate_item(changes, partial=True)
         with connection_scope(self.database_path) as connection:
             current_event = self._require_event(connection, event_id)
-            if current_event["status"] == "ended":
-                raise ValueError("An ended event cannot be changed.")
+            if (
+                current_event["status"] == "ended"
+                and changes.get("status") not in {None, "removed"}
+            ):
+                raise ValueError("An ended event's attendance state cannot be changed.")
             self._require_item(connection, event_id, item_id)
             self._record_undo(connection, event_id)
             item = connection.execute(
@@ -738,9 +750,7 @@ class EventService:
     ) -> dict[str, Any]:
         """Apply an exact permutation of the event's schedule items."""
         with connection_scope(self.database_path) as connection:
-            event = self._require_event(connection, event_id)
-            if event["status"] == "ended":
-                raise ValueError("An ended event cannot be changed.")
+            self._require_event(connection, event_id)
             rows = connection.execute(
                 "SELECT id FROM schedule_items WHERE event_id = ? ORDER BY order_index, id",
                 (event_id,),
@@ -825,13 +835,35 @@ class EventService:
             )
         return self.get_event(event_id)
 
-    def start(self, event_id: int) -> dict[str, Any]:
-        """Start an event and move to its first eligible schedule item."""
+    def start(
+        self, event_id: int, *, defer_first_item: bool = False
+    ) -> dict[str, Any]:
+        """Start an event, optionally waiting for its first scheduled item."""
         event = self.get_event(event_id)
         if event["status"] == "ended":
             raise ValueError("An ended event cannot be resumed.")
+        if defer_first_item and event["status"] == "not_started":
+            with connection_scope(self.database_path) as connection:
+                current = self._require_event(connection, event_id)
+                self._record_undo(connection, event_id)
+                connection.execute(
+                    """UPDATE event_control SET current_item_id = NULL, status = 'running',
+                       state_version = state_version + 1 WHERE id = ?""",
+                    (event_id,),
+                )
+                self._audit(
+                    connection,
+                    event_id,
+                    "started_waiting_for_schedule",
+                    {"current_item_id": current["current_item_id"], "status": current["status"]},
+                    {"current_item_id": None, "status": "running"},
+                    "operator",
+                )
+            return self.get_event(event_id)
         if event["current_item_id"] is None:
             if not event["items"]:
+                return self.update_event(event_id, {"status": "running"})
+            if defer_first_item:
                 return self.update_event(event_id, {"status": "running"})
             return self.advance(event_id, 1)
         with connection_scope(self.database_path) as connection:
@@ -950,12 +982,18 @@ class EventService:
                 raise ValueError("Only speech or talk items can have a summary.")
             self._record_undo(connection, event_id)
             connection.execute("UPDATE schedule_items SET summary = ? WHERE id = ?", (summary.strip(), item_id))
-            connection.execute(
-                """INSERT INTO event_summaries(event_id, item_id, summary) VALUES (?, ?, ?)
-                   ON CONFLICT(event_id, item_id) DO UPDATE SET summary = excluded.summary,
-                   created_at = CURRENT_TIMESTAMP""",
-                (event_id, item_id, summary.strip()),
-            )
+            if summary.strip():
+                connection.execute(
+                    """INSERT INTO event_summaries(event_id, item_id, summary) VALUES (?, ?, ?)
+                       ON CONFLICT(event_id, item_id) DO UPDATE SET summary = excluded.summary,
+                       created_at = CURRENT_TIMESTAMP""",
+                    (event_id, item_id, summary.strip()),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM event_summaries WHERE event_id = ? AND item_id = ?",
+                    (event_id, item_id),
+                )
             self._increment_version(connection, event_id)
             self._audit(connection, event_id, "summary_saved", {}, {"item_id": item_id}, "operator")
         return self.get_event(event_id)

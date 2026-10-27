@@ -186,6 +186,21 @@
     }));
   }
 
+  function sortItemsByScheduledTime() {
+    const items = collectItems().map((item, index) => ({ ...item, originalIndex: index }));
+    items.sort((left, right) => {
+      if (!left.scheduled_time && !right.scheduled_time) {
+        return left.originalIndex - right.originalIndex;
+      }
+      if (!left.scheduled_time) return 1;
+      if (!right.scheduled_time) return -1;
+      return left.scheduled_time.localeCompare(right.scheduled_time)
+        || left.originalIndex - right.originalIndex;
+    });
+    items.forEach((item) => delete item.originalIndex);
+    renderItems(items);
+  }
+
   function control(tag, field, label, value = "", attributes = {}) {
     const wrapper = document.createElement("label");
     wrapper.textContent = label;
@@ -343,6 +358,7 @@
   }
 
   async function saveEvent() {
+    sortItemsByScheduledTime();
     if (!validateForm()) return;
     const payload = formValues();
     payload.session_id = state.sessionId;

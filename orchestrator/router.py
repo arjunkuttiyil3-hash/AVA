@@ -27,6 +27,8 @@ class RouteDecision:
     model: str
     reason: str
     latency_ms: float
+    failure_detail: str | None = None
+    failure_status: int | None = None
 
 
 class ChatBackend(Protocol):
@@ -267,10 +269,23 @@ class ModelRouter:
                         decision.latency_ms = elapsed
                         return
                     except Exception as exc:
-                        errors.append(f"{primary}: {type(exc).__name__}")
+                        failure_detail = str(exc)
+                        failure_status = getattr(exc, "status_code", None)
+                        decision.failure_detail = failure_detail
+                        decision.failure_status = failure_status
+                        errors.append(
+                            f"{primary}: {type(exc).__name__}: {failure_detail}"
+                        )
                         logger.warning(
                             "Model route attempt failed",
-                            extra={"task": task, "backend": primary, "attempt": attempt + 1},
+                            exc_info=True,
+                            extra={
+                                "task": task,
+                                "backend": primary,
+                                "attempt": attempt + 1,
+                                "failure_status": failure_status,
+                                "failure_detail": failure_detail,
+                            },
                         )
                         if attempt_yielded:
                             yield STREAM_RESET
@@ -288,8 +303,18 @@ class ModelRouter:
                     decision.latency_ms = (time.monotonic() - started) * 1000
                     return
             except Exception as exc:
-                errors.append(f"{fallback}: {type(exc).__name__}")
-                logger.exception("Fallback model route failed", extra={"task": task})
+                failure_detail = str(exc)
+                decision.failure_detail = failure_detail
+                decision.failure_status = getattr(exc, "status_code", None)
+                errors.append(f"{fallback}: {type(exc).__name__}: {failure_detail}")
+                logger.exception(
+                    "Fallback model route failed",
+                    extra={
+                        "task": task,
+                        "failure_status": decision.failure_status,
+                        "failure_detail": failure_detail,
+                    },
+                )
 
             reason = "Template fallback after " + (
                 ", ".join(errors) if errors else "configured template route"

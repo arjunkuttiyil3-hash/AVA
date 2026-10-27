@@ -16,18 +16,27 @@
   let silenceTimer = null;
   let audioContext = null;
   let analyser = null;
+  let playbackAudioContext = null;
   let captureEnabled = false;
   let captureQueue = Promise.resolve();
   let capturingItemId = 0;
   let captureSuppressedItemId = 0;
   let audioUnlocked = false;
-  let activeAudio = null;
+  let activeAudioSource = null;
+  let audioPlaybackActive = false;
   let activeUtterance = null;
   let audioGeneration = 0;
   let silenceSuggestionSeconds = 8;
   let activeScriptKey = "";
   let scheduleTimer = null;
   let scheduleSignature = "";
+  let finishTimer = null;
+  let finishSignature = "";
+  let pendingStartTimer = null;
+  let startPending = false;
+  let autoFinishingItemId = 0;
+  let savedScriptSegments = [];
+  let openingPlayedEventId = 0;
   let announcementInProgress = false;
   let editingItemId = 0;
   const eventSummaryAudioSeen = new Set();
@@ -97,7 +106,11 @@
   async function request(url, options = {}) {
     const response = await fetch(url, options);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `Request failed (${response.status}).`);
+    if (!response.ok) {
+      const error = new Error(data.detail || `Request failed (${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
     return data;
   }
 
@@ -117,7 +130,12 @@
   }
 
   function isSpeechOrTalk(item) {
-    return ["speech", "talk", "keynote", "lecture", "presentation"]
+    return ["speech", "talk", "announcement", "keynote", "lecture", "presentation"]
+      .includes(String(item?.type || "").trim().toLowerCase());
+  }
+
+  function isAutomaticCaptureType(item) {
+    return ["speech", "talk", "announcement"]
       .includes(String(item?.type || "").trim().toLowerCase());
   }
 
@@ -156,7 +174,13 @@
       && !["absent", "removed", "skipped", "done"].includes(item.status));
     $("#current-item-label").textContent = current ? current.title : "No current item";
     $("#next-item-label").textContent = upcoming ? upcoming.title : "No upcoming item";
-    $("#start-event").textContent = event.status === "paused" ? "Resume event" : "Start event";
+    $("#start-event").textContent = startPending
+      ? "Start anchoring now"
+      : event.status === "paused" ? "Resume anchoring"
+        : event.status === "running" ? "Resume anchoring audio" : "Start anchoring";
+    $("#start-event-help").textContent = event.status === "running"
+      ? "Anchoring is live. Press this button to re-enable audio and resume scheduled playback."
+      : "Enable audio now; AVA will begin speaking at the scheduled event time on this laptop.";
     $("#start-event").disabled = event.status === "ended";
     $("#pause-event").disabled = event.status !== "running";
     $("#next-item").disabled = event.status === "ended";
@@ -185,7 +209,7 @@
     $("#summary-editor").value = item?.summary || "";
     $(".speech-card").hidden = !isSpeechOrTalk(item);
     $("#speech-finished").disabled = !isSpeechOrTalk(item) || item.status !== "on_stage";
-    if (item?.id !== captureSuppressedItemId && isSpeechOrTalk(item)
+    if (!announcementInProgress && item?.id !== captureSuppressedItemId && isAutomaticCaptureType(item)
       && item.status === "on_stage" && capturingItemId !== item.id) {
       if (captureEnabled) {
         capturingItemId = item.id;
@@ -193,10 +217,11 @@
       } else {
         void beginCapture(item);
       }
-    } else if ((!isSpeechOrTalk(item) || item.status !== "on_stage") && captureEnabled) {
+    } else if ((!isAutomaticCaptureType(item) || item.status !== "on_stage") && captureEnabled) {
       stopCapture();
     }
     syncScheduledPlayback();
+    syncScheduledFinish();
   }
 
   function renderItems(items) {
@@ -243,7 +268,7 @@
         button("Present", () => updateItem(item, { status: "arrived" }));
       }
       if (!["absent", "removed", "done", "skipped"].includes(item.status)) {
-        button("Absent / not coming", () => {
+        button("Announce absence / skip", () => {
           if (window.confirm(`Mark ${item.person_name || item.title} absent? Their name will be removed from upcoming announcements.`)) {
             void updateItem(item, { status: "absent" });
           }
@@ -309,21 +334,42 @@
   }
 
   async function loadEvent() {
+    let event = null;
+    if (sessionId) {
+      try {
+        event = await request(`/api/live-events/session/${encodeURIComponent(sessionId)}`);
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+    }
+    if (!event && eventId) {
+      try {
+        event = await request(`/api/live-events/${eventId}`);
+        sessionId = event.session_id || sessionId;
+        if (sessionId) localStorage.setItem(sessionStorageKey, sessionId);
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        eventId = 0;
+        localStorage.removeItem(eventStorageKey);
+      }
+    }
     if (!sessionId) {
       const session = await request("/api/sessions", { method: "POST" });
       sessionId = session.session_id;
       localStorage.setItem(sessionStorageKey, sessionId);
     }
-    let event;
-    try {
-      event = await request(`/api/live-events/session/${encodeURIComponent(sessionId)}`);
-    } catch (error) {
-      if (error.message.includes("No live event")) {
-        $("#empty-state").hidden = false;
-        $("#control-content").hidden = true;
-        return;
+    if (!event) {
+      try {
+        event = await request(`/api/live-events/session/${encodeURIComponent(sessionId)}`);
+      } catch (error) {
+        if (error.status === 404) {
+          $("#empty-state").hidden = false;
+          $("#control-content").hidden = true;
+          $("#start-event").disabled = true;
+          return;
+        }
+        throw error;
       }
-      throw error;
     }
     render(event);
     const settings = await request(`/api/event/settings/${encodeURIComponent(sessionId)}`);
@@ -409,10 +455,39 @@
   }
 
   async function updateItem(item, changes) {
+    const announceAbsence = changes.status === "absent";
+    if (announceAbsence) {
+      stopBrowserAudio();
+      announcementInProgress = true;
+    }
     try {
       await afterMutation(() => patch(`/api/event/items/${item.id}`, { event_id: eventId, ...changes }));
+      if (announceAbsence) await playAbsenceAnnouncement(item);
     } catch (error) {
       notify(error.message);
+    } finally {
+      if (announceAbsence) {
+        announcementInProgress = false;
+        syncScheduledPlayback();
+      }
+    }
+  }
+
+  async function playAbsenceAnnouncement(item) {
+    try {
+      const notice = await post(
+        `/api/live-events/${eventId}/items/${item.id}/absence-announcement`,
+      );
+      activeScriptKey = `absence-${item.id}`;
+      saveScriptLine(activeScriptKey, notice.text, false);
+      $("#script-item-title").textContent = `Schedule change · ${item.title}`;
+      $("#current-script-line").value = notice.text;
+      const result = await playUrlAndWait(notice.url);
+      if (!result.completed && !result.interrupted) {
+        await speakTextAndWait(notice.text, eventState.language);
+      }
+    } catch (error) {
+      notify(`The item was marked absent, but its cancellation notice could not be played: ${error.message}`);
     }
   }
 
@@ -485,45 +560,42 @@
   }
 
   async function unlockAudio() {
-    if (audioUnlocked) return;
-    const context = new (window.AudioContext || window.webkitAudioContext)();
-    await context.resume();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
+    if (!playbackAudioContext) {
+      const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextConstructor) throw new Error("Web Audio is not supported in this browser.");
+      playbackAudioContext = new AudioContextConstructor();
+    }
+    if (playbackAudioContext.state !== "running") {
+      await playbackAudioContext.resume();
+    }
+    const oscillator = playbackAudioContext.createOscillator();
+    const gain = playbackAudioContext.createGain();
     gain.gain.value = 0;
     oscillator.connect(gain);
-    gain.connect(context.destination);
+    gain.connect(playbackAudioContext.destination);
     oscillator.start();
-    oscillator.stop(context.currentTime + 0.01);
+    oscillator.stop(playbackAudioContext.currentTime + 0.01);
     audioUnlocked = true;
     $("#audio-unlock").textContent = "Audio enabled";
   }
 
   async function playUrl(url) {
-    if (!audioUnlocked) {
-      notify("Enable audio first, then press Speak it again.");
-      return false;
-    }
-    stopBrowserAudio();
-    activeAudio = new Audio(url);
-    try {
-      await activeAudio.play();
-      return true;
-    } catch {
-      notify("Audio could not play in this browser.");
-      return false;
-    }
+    const result = await playUrlAndWait(url);
+    return result.completed;
   }
 
   function stopBrowserAudio() {
     audioGeneration += 1;
     window.speechSynthesis?.cancel();
     activeUtterance = null;
-    if (activeAudio) {
-      activeAudio.pause();
-      activeAudio.currentTime = 0;
-      activeAudio = null;
+    if (activeAudioSource) {
+      try {
+        activeAudioSource.stop();
+      } catch {
+        activeAudioSource = null;
+      }
     }
+    audioPlaybackActive = false;
   }
 
   function speakFallback(text, language) {
@@ -543,44 +615,184 @@
     return true;
   }
 
-  function scheduledTimestamp(item) {
-    if (!item.scheduled_time) return null;
-    const [hours, minutes] = item.scheduled_time.split(":").map(Number);
-    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  function speakTextAndWait(text, language, generation = audioGeneration) {
+    if (!("speechSynthesis" in window) || !text || generation !== audioGeneration) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = language === "ml" ? "ml-IN" : "en-IN";
+      activeUtterance = utterance;
+      utterance.addEventListener("end", () => {
+        if (activeUtterance === utterance) activeUtterance = null;
+        resolve(generation === audioGeneration);
+      }, { once: true });
+      utterance.addEventListener("error", () => {
+        if (activeUtterance === utterance) activeUtterance = null;
+        notify("Browser speech could not play this announcement.");
+        resolve(false);
+      }, { once: true });
+      window.speechSynthesis.speak(utterance);
+    });
+  }
+
+  async function loadSavedScript() {
+    const result = await request(`/api/anchoring/scripts/${eventId}`);
+    savedScriptSegments = result.segments;
+    return savedScriptSegments;
+  }
+
+  async function loadSavedScriptForPlayback() {
+    try {
+      await loadSavedScript();
+    } catch (error) {
+      savedScriptSegments = [];
+      notify(`Saved script could not be loaded; using live announcements instead: ${error.message}`);
+    }
+  }
+
+  function scriptSegment(id) {
+    return savedScriptSegments.find((segment) => segment.id === id && segment.text.trim());
+  }
+
+  async function speakScriptSegment(segment, generation) {
+    if (!segment) return false;
+    if (generation !== audioGeneration) return Promise.resolve(false);
+    try {
+      const audio = await request(
+        `/api/live-events/${eventId}/scripts/${encodeURIComponent(segment.id)}/audio`,
+      );
+      if (generation !== audioGeneration) return false;
+      const playback = await playUrlAndWait(audio.url);
+      if (playback.completed) return true;
+      if (playback.interrupted || generation !== audioGeneration) return false;
+    } catch (error) {
+      if (generation !== audioGeneration) return false;
+      if (error.status === 409) {
+        notify(error.message);
+        return false;
+      }
+      notify(`Could not prepare saved script audio: ${error.message}. Trying browser speech.`);
+    }
+    return speakTextAndWait(segment.text, eventState?.language, generation);
+  }
+
+  async function speakScriptSegments(segments, generation = audioGeneration) {
+    for (const segment of segments) {
+      if (generation !== audioGeneration) return false;
+      if (!await speakScriptSegment(segment, generation)) return false;
+    }
+    return segments.length > 0;
+  }
+
+  async function playUrlAndWait(url) {
+    if (!playbackAudioContext || !audioUnlocked) {
+      notify("Press the large Start button or Enable audio before scheduled playback.");
+      return { completed: false, interrupted: false };
+    }
+    if (activeAudioSource || activeUtterance) stopBrowserAudio();
+    const generation = audioGeneration;
+    let source = null;
+    let completed = false;
+    try {
+      if (playbackAudioContext.state !== "running") {
+        await playbackAudioContext.resume();
+      }
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Audio request failed (${response.status}).`);
+      const buffer = await playbackAudioContext.decodeAudioData(await response.arrayBuffer());
+      if (generation !== audioGeneration) {
+        return { completed: false, interrupted: true };
+      }
+      source = playbackAudioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(playbackAudioContext.destination);
+      activeAudioSource = source;
+      audioPlaybackActive = true;
+      await new Promise((resolve, reject) => {
+        source.addEventListener("ended", () => {
+          completed = true;
+          resolve();
+        }, { once: true });
+        source.addEventListener("error", () => reject(new Error("Audio playback failed.")), { once: true });
+        source.start();
+      });
+      const interrupted = generation !== audioGeneration;
+      return { completed: completed && !interrupted, interrupted };
+    } catch (error) {
+      notify(error.message);
+      return { completed: false, interrupted: generation !== audioGeneration };
+    } finally {
+      if (activeAudioSource === source) activeAudioSource = null;
+      audioPlaybackActive = false;
+    }
+  }
+
+  function playSummaryAfterSpeech(item, summary) {
+    if (!summary?.trim()) return Promise.resolve();
+    return (async () => {
+      const generation = audioGeneration;
+      try {
+        const audio = await post(`/api/live-events/${eventId}/items/${item.id}/summary/speak`);
+        if (generation !== audioGeneration) return;
+        const playback = await playUrlAndWait(audio.url);
+          if (!playback.completed && !playback.interrupted) {
+            await speakTextAndWait(summary, eventState?.language, generation);
+          }
+      } catch (error) {
+        notify(`The speech summary was saved but could not be played: ${error.message}`);
+      }
+    })();
+  }
+
+  function localTimestamp(timeText) {
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(timeText || "");
+    if (!match) return null;
     const now = new Date();
-    const eventDate = eventState.date && /^\d{4}-\d{2}-\d{2}$/.test(eventState.date)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const eventDate = eventState?.date && /^\d{4}-\d{2}-\d{2}$/.test(eventState.date)
       ? new Date(`${eventState.date}T00:00:00`)
       : null;
-    const target = new Date(
-      eventDate && eventDate >= new Date(now.getFullYear(), now.getMonth(), now.getDate())
-        ? eventDate
-        : now,
-    );
-    target.setHours(hours, minutes, 0, 0);
+    const target = eventDate && eventDate >= today ? eventDate : today;
+    target.setHours(Number(match[1]), Number(match[2]), 0, 0);
     return target.getTime();
+  }
+
+  function scheduledTimestamp(item) {
+    return localTimestamp(item?.scheduled_time);
+  }
+
+  function nextEligibleItem(current = currentItem()) {
+    return eventState?.items.find((item) =>
+      (!current || item.order_index > current.order_index)
+      && !["absent", "removed", "skipped", "done"].includes(item.status)) || null;
   }
 
   function syncScheduledPlayback() {
     const current = currentItem();
-    const next = current && eventState?.items.find((item) =>
-      item.order_index > current.order_index
-      && !["absent", "removed", "skipped", "done"].includes(item.status));
-    if (eventState?.status !== "running" || !next?.scheduled_time) {
+    const next = nextEligibleItem(current);
+    if (eventState?.status !== "running" || !next) {
       window.clearTimeout(scheduleTimer);
       scheduleTimer = null;
       scheduleSignature = "";
       return;
     }
-    const timestamp = scheduledTimestamp(next);
+    const eventStart = localTimestamp(eventState.event_start_time);
+    const itemStart = scheduledTimestamp(next);
+    const timestamp = eventStart === null
+      ? itemStart
+      : itemStart === null ? eventStart : Math.max(eventStart, itemStart);
     if (timestamp === null) return;
-    const signature = `${eventState.id}:${current.id}:${next.id}:${timestamp}`;
+    const signature = `${eventState.id}:${current?.id || "none"}:${next.id}:${timestamp}`;
     if (scheduleSignature === signature && scheduleTimer !== null) return;
     window.clearTimeout(scheduleTimer);
     scheduleSignature = signature;
 
     const runWhenReady = () => {
       scheduleTimer = null;
-      if (eventState?.status !== "running" || currentItem()?.id !== current.id) {
+      if (eventState?.status !== "running"
+        || (currentItem()?.id || null) !== (current?.id || null)
+        || nextEligibleItem(currentItem())?.id !== next.id) {
         syncScheduledPlayback();
         return;
       }
@@ -589,7 +801,18 @@
         scheduleTimer = window.setTimeout(runWhenReady, Math.min(remaining, 2_147_000_000));
         return;
       }
-      const audioPlaying = (activeAudio && !activeAudio.paused && !activeAudio.ended)
+      const endingItem = currentItem();
+      const endingAt = endingItem && scheduledEndTimestamp(
+        endingItem,
+        nextEligibleItem(endingItem),
+      );
+      if (endingItem?.status === "on_stage" && isAutomaticCaptureType(endingItem)
+        && endingAt !== null && endingAt <= Date.now()) {
+        if (!autoFinishingItemId) void finishSpeechAutomatically(endingItem);
+        scheduleTimer = window.setTimeout(runWhenReady, 1000);
+        return;
+      }
+      const audioPlaying = audioPlaybackActive
         || Boolean(activeUtterance && window.speechSynthesis?.speaking);
       if (announcementInProgress || audioPlaying) {
         scheduleTimer = window.setTimeout(runWhenReady, 1000);
@@ -604,7 +827,79 @@
     );
   }
 
-  async function callNow(itemId = null) {
+  function scheduledEndTimestamp(item, next) {
+    const start = scheduledTimestamp(item);
+    const duration = Number(item.planned_duration) || 0;
+    if (start !== null && duration > 0) return start + duration * 60_000;
+    return next?.scheduled_time ? scheduledTimestamp(next) : null;
+  }
+
+  function syncScheduledFinish() {
+    const current = currentItem();
+    const next = nextEligibleItem(current);
+    if (eventState?.status !== "running" || !current
+      || current.status !== "on_stage" || !isAutomaticCaptureType(current)) {
+      window.clearTimeout(finishTimer);
+      finishTimer = null;
+      finishSignature = "";
+      return;
+    }
+    const timestamp = scheduledEndTimestamp(current, next);
+    if (timestamp === null || autoFinishingItemId === current.id) return;
+    const signature = `${eventState.id}:${current.id}:${timestamp}`;
+    if (finishSignature === signature && finishTimer !== null) return;
+    window.clearTimeout(finishTimer);
+    finishSignature = signature;
+    const finishWhenDue = () => {
+      finishTimer = null;
+      if (eventState?.status !== "running" || currentItem()?.id !== current.id) {
+        syncScheduledFinish();
+        return;
+      }
+      const remaining = timestamp - Date.now();
+      if (remaining > 0) {
+        finishTimer = window.setTimeout(finishWhenDue, Math.min(remaining, 2_147_000_000));
+        return;
+      }
+      if (announcementInProgress || audioPlaybackActive) {
+        finishTimer = window.setTimeout(finishWhenDue, 1000);
+        return;
+      }
+      finishSignature = "";
+      void finishSpeechAutomatically(current);
+    };
+    finishTimer = window.setTimeout(
+      finishWhenDue,
+      Math.max(0, Math.min(timestamp - Date.now(), 2_147_000_000)),
+    );
+  }
+
+  async function finishSpeechAutomatically(item) {
+    if (autoFinishingItemId || currentItem()?.id !== item.id) return;
+    autoFinishingItemId = item.id;
+    captureSuppressedItemId = item.id;
+    announcementInProgress = true;
+    try {
+      await stopCapture();
+      if (currentItem()?.id !== item.id) return;
+      await persistTranscript();
+      const result = await post(`/api/live-events/${eventId}/items/${item.id}/finish`, {
+        language: eventState.language,
+      });
+      await refresh();
+      notify(`Summary ready for ${item.title}.`);
+      await playSummaryAfterSpeech(item, result.summary);
+    } catch (error) {
+      notify(`Could not automatically finish ${item.title}: ${error.message}`);
+    } finally {
+      autoFinishingItemId = 0;
+      announcementInProgress = false;
+      syncScheduledFinish();
+      syncScheduledPlayback();
+    }
+  }
+
+  async function callNow(itemId = null, { includeOpening = false } = {}) {
     if (!eventId) {
       notify("Set up an event before calling a schedule item.");
       return;
@@ -622,7 +917,60 @@
       } catch {
         notify("Audio unlock failed; trying browser speech after the announcement is prepared.");
       }
-      const result = await afterMutation(() => post(
+      await loadSavedScriptForPlayback();
+      const current = currentItem();
+      const target = itemId === null
+        ? nextEligibleItem(current)
+        : eventState.items.find((item) => item.id === itemId);
+      if (!target) {
+        notify("There is no eligible schedule item to announce.");
+        return;
+      }
+      const preparedSegments = [];
+      let missingLiveTransition = false;
+      if (includeOpening) {
+        const opening = scriptSegment("opening");
+        if (opening) preparedSegments.push(opening);
+      }
+      if (current && current.id !== target.id) {
+        const transition = scriptSegment(`transition-${current.id}-${target.id}`);
+        if (transition) preparedSegments.push(transition);
+        else missingLiveTransition = true;
+      }
+      const itemSegment = scriptSegment(
+        `${target.type === "break" ? "break" : "intro"}-${target.id}`,
+      );
+      if (itemSegment) preparedSegments.push(itemSegment);
+
+      let result;
+      if (preparedSegments.length && !missingLiveTransition) {
+        const lineKey = String(target.id);
+        const savedLines = readScriptLines();
+        if (savedLines[lineKey]?.manual && itemSegment) {
+          preparedSegments[preparedSegments.length - 1] = {
+            ...itemSegment,
+            text: savedLines[lineKey].text,
+          };
+        }
+        if (current?.id !== target.id) {
+          result = await afterMutation(() => post(
+            `/api/live-events/${eventId}/jump/${target.id}`,
+          ));
+        } else {
+          result = { event: eventState };
+        }
+        const displayLine = itemSegment?.text || preparedSegments[preparedSegments.length - 1].text;
+        if (!savedLines[lineKey]?.manual) saveScriptLine(lineKey, displayLine, false);
+        if (activeScriptKey === lineKey) $("#current-script-line").value = displayLine;
+        if (generation !== audioGeneration) return;
+        const played = await speakScriptSegments(preparedSegments, generation);
+        if (!played && generation === audioGeneration) {
+          notify("The saved script is ready, but browser speech could not play it.");
+        }
+        return;
+      }
+
+      result = await afterMutation(() => post(
         `/api/live-events/${eventId}/call-now`,
         {
           ...(itemId === null ? {} : { item_id: itemId }),
@@ -645,25 +993,121 @@
       notify(error.message);
     } finally {
       announcementInProgress = false;
+      const current = currentItem();
+      if (current && isAutomaticCaptureType(current) && current.status === "on_stage"
+        && current.id !== captureSuppressedItemId && capturingItemId !== current.id) {
+        void beginCapture(current);
+      }
       syncScheduledPlayback();
     }
   }
 
   async function startEventFlow() {
+    if (!eventId || !eventState) {
+      notify("No event is loaded. Set up an event before starting anchoring.");
+      return;
+    }
+    if (eventState.status === "ended") {
+      notify("This event has ended and cannot be restarted.");
+      return;
+    }
+    const startImmediately = startPending;
+    if (startImmediately) {
+      window.clearTimeout(pendingStartTimer);
+      pendingStartTimer = null;
+      startPending = false;
+      render(eventState);
+    }
     try {
       try {
         await unlockAudio();
-      } catch {
-        notify("Audio unlock failed; browser speech will be tried after starting.");
+      } catch (error) {
+        notify(`Audio could not be unlocked; anchoring will still start: ${error.message}`);
       }
-      const started = await afterMutation(() => post(`/api/live-events/${eventId}/start`));
-      if (started.current_item_id) {
-        await callNow(started.current_item_id);
+      if (eventState.status === "running") {
+        await loadSavedScriptForPlayback();
+        const opening = scriptSegment("opening");
+        if (!currentItem() && opening && openingPlayedEventId !== eventId) {
+          announcementInProgress = true;
+          try {
+            if (await speakScriptSegments([opening])) openingPlayedEventId = eventId;
+          } finally {
+            announcementInProgress = false;
+          }
+        }
+        syncScheduledPlayback();
+        notify("Anchoring audio resumed. Scheduled program announcements are active.");
+        return;
+      }
+      if (startImmediately) {
+        await startEventAtScheduledTime();
+        return;
+      }
+      const timestamp = localTimestamp(eventState.event_start_time) ?? Date.now();
+      const delay = timestamp - Date.now();
+      if (delay > 0) {
+        startPending = true;
+        render(eventState);
+        notify(`Anchoring will start at ${eventState.event_start_time} laptop time.`);
+        const startWhenReady = () => {
+          const remaining = timestamp - Date.now();
+          if (remaining > 0) {
+            pendingStartTimer = window.setTimeout(
+              startWhenReady,
+              Math.min(remaining, 2_147_000_000),
+            );
+            return;
+          }
+          pendingStartTimer = null;
+          void startEventAtScheduledTime();
+        };
+        pendingStartTimer = window.setTimeout(
+          startWhenReady,
+          Math.min(delay, 2_147_000_000),
+        );
       } else {
-        notify("The event started, but there are no eligible program items to announce.");
+        await startEventAtScheduledTime();
       }
     } catch (error) {
       notify(error.message);
+    }
+  }
+
+  async function startEventAtScheduledTime() {
+    startPending = false;
+    announcementInProgress = true;
+    if (eventState) render(eventState);
+    try {
+      if (!eventState) throw new Error("No event is loaded.");
+      const existingCurrent = eventState.status === "paused" ? currentItem() : null;
+      const started = await post(
+        `/api/live-events/${eventId}/start`,
+        { defer_first_item: !existingCurrent },
+      );
+      render(started);
+      await loadSavedScriptForPlayback();
+      if (existingCurrent) {
+        await callNow(existingCurrent.id);
+        return;
+      }
+      const opening = scriptSegment("opening");
+      if (opening) {
+        stopBrowserAudio();
+        const played = await speakScriptSegments([opening]);
+        if (played) openingPlayedEventId = eventId;
+        if (!played) notify("Anchoring started, but the opening audio could not be played.");
+      }
+      syncScheduledPlayback();
+      if (!started.items.some((item) => !["absent", "removed", "skipped"].includes(item.status))) {
+        notify("The event started, but there are no eligible program items to announce.");
+      } else {
+        notify("Anchoring started. Programs will be introduced at their scheduled laptop times.");
+      }
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      announcementInProgress = false;
+      syncScheduledPlayback();
     }
   }
 
@@ -917,7 +1361,7 @@
   $("#capture-toggle").addEventListener("click", () => {
     const item = currentItem();
     if (!isSpeechOrTalk(item) || item.status !== "on_stage") {
-      notify("Start a speech or talk item before capturing its transcript.");
+      notify("Start a speech, talk, or announcement item before capturing its transcript.");
       return;
     }
     captureSuppressedItemId = 0;

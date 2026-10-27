@@ -96,12 +96,9 @@ async def _run_event_summary_scheduler(application: FastAPI) -> None:
                     language=event["language"],
                     speaker_name="",
                 )
-                if summary in {
-                    "The summary could not be generated.",
-                    "ട്രാൻസ്ക്രിപ്റ്റ് വളരെ ചുരുങ്ങിയതിനാൽ സംഗ്രഹം തയ്യാറാക്കാനായില്ല.",
-                }:
+                if not summary:
                     logger.info(
-                        "Skipping event summary because the transcript was not summarizable",
+                        "Skipping event summary because it contains no validated speech content",
                         extra={"event_id": event["id"]},
                     )
                     continue
@@ -991,6 +988,62 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         except EventNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @application.get(
+        "/api/live-events/{event_id}/scripts/{segment_id}/audio"
+    )
+    async def synthesize_script_audio(
+        event_id: int, segment_id: str
+    ) -> dict[str, str]:
+        """Synthesize one persisted, still-eligible anchoring script segment."""
+        try:
+            event = await asyncio.to_thread(
+                application.state.event_service.get_event, event_id
+            )
+            script = await asyncio.to_thread(
+                application.state.event_service.get_script, event_id
+            )
+        except EventNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        segment = next(
+            (entry for entry in script["segments"] if entry["id"] == segment_id),
+            None,
+        )
+        if segment is None:
+            raise HTTPException(status_code=404, detail="Script segment not found.")
+        if segment.get("itemId") is not None:
+            item = next(
+                (entry for entry in event["items"] if entry["id"] == segment["itemId"]),
+                None,
+            )
+            is_absence_segment = segment.get("type") == "absence"
+            if item is None or (
+                item["status"] in {"removed", "skipped"}
+                or (item["status"] == "absent" and not is_absence_segment)
+                or (is_absence_segment and item["status"] != "absent")
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This script segment belongs to a program that is no longer eligible.",
+                )
+        if segment.get("type") != "absence" and contains_blocked_name(
+            segment["text"], blocked_names(event)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This saved script mentions someone marked absent; regenerate the script.",
+            )
+        preferences = await asyncio.to_thread(
+            application.state.pipeline.repository.get_preferences,
+            event["session_id"],
+        )
+        audio = await application.state.pipeline.synthesizer.synthesize(
+            segment["text"],
+            event["language"],
+            voice=preferences.get("voice") or None,
+            cache_version=f"script-{script['version']}-{event['state_version']}",
+        )
+        return {"url": f"/api/audio/{audio.name}"}
+
     @application.post("/api/anchoring/scripts/generate")
     async def generate_anchoring_script(
         request: ScriptGenerateRequest,
@@ -1112,7 +1165,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
         language = event.get("language", "en")
 
-        def generate_segments() -> tuple[str, str, str]:
+        def generate_segments() -> tuple[str, Any]:
             chunks, decision = application.state.pipeline.router.stream(
                 "anchoring_script",
                 language,
@@ -1121,10 +1174,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             raw = "".join(chunks).strip()
             if raw.startswith("```"):
                 raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
-            return raw, decision.backend, decision.model
+            return raw, decision
 
         try:
-            raw, backend, model = await asyncio.to_thread(generate_segments)
+            raw, decision = await asyncio.to_thread(generate_segments)
         except Exception as exc:
             logger.exception("Structured anchoring script generation failed")
             status_code = 429 if getattr(exc, "status_code", None) == 429 else 503
@@ -1135,11 +1188,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             else:
                 detail = "Gemini could not generate the script. Check the connection and retry."
             raise HTTPException(status_code=status_code, detail=detail) from exc
+        backend = decision.backend
+        model = decision.model
         if backend == "template":
-            raise HTTPException(
-                status_code=503,
-                detail="Gemini is unavailable (missing key, rate limit, or network issue). Check the server API key, wait briefly, and retry.",
+            failure_detail = getattr(decision, "failure_detail", None)
+            detail = (
+                f"Gemini script generation failed: {failure_detail} "
+                "The template fallback was retained, but this endpoint requires a "
+                "Gemini-generated script; correct the provider issue and retry."
+                if failure_detail
+                else "Gemini is not available for script generation and no provider error was reported."
             )
+            raise HTTPException(status_code=503, detail=detail)
         try:
             generated = validate_script_segments(json.loads(raw), pending_targets)
         except (json.JSONDecodeError, ValueError) as exc:
@@ -1436,9 +1496,15 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
 
     @application.post("/api/live-events/{event_id}/start")
-    async def start_live_event(event_id: int) -> dict[str, Any]:
+    async def start_live_event(
+        event_id: int, payload: dict[str, Any] = Body(default_factory=dict)
+    ) -> dict[str, Any]:
         return await mutate_live_event(
-            event_id, lambda: application.state.event_service.start(event_id), action="started"
+            event_id,
+            lambda: application.state.event_service.start(
+                event_id, defer_first_item=payload.get("defer_first_item") is True
+            ),
+            action="started",
         )
 
     @application.post("/api/live-events/{event_id}/pause")
@@ -2093,6 +2159,78 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             "text": message,
             "url": f"/api/audio/{audio.name}",
             "notice": application.state.pipeline.synthesizer.get_status(audio),
+        }
+
+    @application.post(
+        "/api/live-events/{event_id}/items/{item_id}/absence-announcement"
+    )
+    async def absent_item_announcement(event_id: int, item_id: int) -> dict[str, str]:
+        """Create a spoken cancellation notice for an item marked absent."""
+        try:
+            event = await asyncio.to_thread(
+                application.state.event_service.get_event, event_id
+            )
+        except EventNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        item = next(
+            (entry for entry in event["items"] if entry["id"] == item_id), None
+        )
+        if item is None:
+            raise HTTPException(status_code=404, detail="Schedule item not found.")
+        if item["status"] != "absent":
+            raise HTTPException(
+                status_code=409,
+                detail="Mark the schedule item absent before generating its cancellation notice.",
+            )
+        person = str(item["person_name"] or "").strip()
+        title = str(item["title"] or "").strip()
+        if event["language"] == "ml":
+            message = (
+                f"{person} ഇന്ന് എത്തിച്ചേരാൻ കഴിയില്ലെന്ന് അറിയിക്കുന്നു. "
+                f"അതിനാൽ {title} പരിപാടി റദ്ദാക്കിയിരിക്കുന്നു. "
+                "ഈ മാറ്റത്തിൽ സഹകരിക്കുന്നതിന് നന്ദി."
+                if person
+                else f"{title} പരിപാടി റദ്ദാക്കിയിരിക്കുന്നു. "
+                "ഈ മാറ്റത്തിൽ സഹകരിക്കുന്നതിന് നന്ദി."
+            )
+        else:
+            message = (
+                f"Please note that {person} is unable to join us today. "
+                f"The {title} program has been cancelled. Thank you for your understanding."
+                if person
+                else f"Please note that the {title} program has been cancelled. "
+                "Thank you for your understanding."
+            )
+        service: EventService = application.state.event_service
+        existing_script = await asyncio.to_thread(service.get_script, event_id)
+        absence_segment_id = f"absence-{item_id}"
+        absence_segment = {
+            "id": absence_segment_id,
+            "type": "absence",
+            "itemId": item_id,
+            "text": message,
+            "estimatedSeconds": max(1, round(len(message.split()) / 2.2)),
+            "edited": False,
+        }
+        segments = [
+            segment for segment in existing_script["segments"]
+            if segment["id"] != absence_segment_id
+        ]
+        segments.append(absence_segment)
+        await asyncio.to_thread(service.save_script, event_id, segments)
+        preferences = await asyncio.to_thread(
+            application.state.pipeline.repository.get_preferences,
+            event["session_id"],
+        )
+        audio = await application.state.pipeline.synthesizer.synthesize(
+            message,
+            event["language"],
+            voice=preferences.get("voice") or None,
+            cache_version=f"absent-{event['state_version']}-{item_id}",
+        )
+        return {
+            "text": message,
+            "url": f"/api/audio/{audio.name}",
         }
 
     @application.get("/api/live-events/{event_id}/report")

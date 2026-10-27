@@ -5,8 +5,8 @@ Each task can provide ordered candidates with an estimated latency and a minimum
 available-memory requirement; `llm.latency_budget_ms` bounds candidate selection.
 AVA uses the official asynchronous `google-genai` client for all language-model
 calls. Set `GEMINI_API_KEY` and `GEMINI_MODEL` in the project-root `.env`; the
-default primary model is `gemini-3.5-flash`. Optionally set
-`GEMINI_FALLBACK_MODEL` (default `gemini-3.6-flash`). AVA retries transient 429
+default primary model is `gemini-3.6-flash`. Optionally set
+`GEMINI_FALLBACK_MODEL` (default `gemini-3.5-flash-lite`). AVA retries transient 429
 and 5xx responses, then tries the fallback after 404, 429, timeout, or 5xx
 errors, and uses deterministic
 templates if the configured models cannot complete the request. Structured

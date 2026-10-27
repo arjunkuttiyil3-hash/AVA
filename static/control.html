@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manjari:wght@400;700&family=Noto+Sans+Malayalam:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/ava.css">
   <link rel="stylesheet" href="/static/css/control.css">
-  <script src="/static/js/control.js" defer></script>
+  <script src="/static/js/control.js?v=4" defer></script>
 </head>
 <body class="control-body">
   <main class="control-shell">
@@ -57,8 +57,11 @@
             <label class="wide-field">Chief guest<input id="field-chief-guest" maxlength="200"></label>
           </div>
           <button id="save-event-fields" class="secondary-button" type="button">Save event details</button>
+          <div class="start-anchoring-panel">
+            <button id="start-event" class="primary-button start-anchoring-button" type="button">▶ START ALL ANCHORING AUDIO</button>
+            <p id="start-event-help">Enable audio now; AVA will begin speaking at the scheduled event time on this laptop.</p>
+          </div>
           <div class="event-controls">
-            <button id="start-event" class="primary-button" type="button">Start event</button>
             <button id="pause-event" class="secondary-button" type="button">Pause</button>
             <button id="previous-item" class="secondary-button" type="button">← Previous</button>
             <button id="next-item" class="primary-button" type="button">Next item →</button>

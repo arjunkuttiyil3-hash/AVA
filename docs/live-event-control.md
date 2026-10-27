@@ -68,16 +68,29 @@ browser audio and requests the robot's stop gesture.
 The operator console presents the persisted `pending`, `arrived`, `on_stage`,
 and `done` values as scheduled, present, in progress, and completed. This keeps
 existing databases and speaker-capture logic compatible. Paused events resume
-through the existing start route; ended events cannot restart or accept new
-schedule items. The closing line is returned when the operator ends an event.
-Starting or resuming from `/control` unlocks browser audio, starts the event,
-and immediately generates and plays the current item's introduction. A later
-eligible item with a scheduled `HH:MM` time is introduced automatically at that
-local time; if the previous audio is still playing, AVA waits for it to finish.
-Items without a scheduled time remain under manual **Next item** / **Call now**
-control. The operator can edit the title, type, speaker, duration, details, and
-scheduled time or add items while the event is live; schedule changes are
-persisted and synchronized to connected control windows.
+through the existing start route. Ended events remain closed to live playback
+and advancement, but their details, schedule, and anchoring scripts can still
+be edited and regenerated from Anchoring Studio. The closing line is returned
+when the operator ends an event.
+Starting or resuming from `/control` unlocks browser audio and schedules the
+opening at the event's start time using the operator's laptop clock. Studio
+saves running-order items in scheduled-time order; the live console's up/down
+controls can then override that order, and automatic playback follows the
+authoritative live order. The opening, item introductions, transitions, and
+breaks are read from the saved Anchoring Studio script. If a matching saved
+segment is missing, the existing live announcement generator is used. Items with scheduled
+`HH:MM` times are called automatically at their local time; AVA waits for active
+speech playback before advancing. Items without a scheduled time remain under
+manual **Next item** / **Call now** control. The operator can edit the title,
+type, speaker, duration, details, and scheduled time or add items while the
+event is live; schedule changes are persisted and synchronized to connected
+control windows.
+Use the large **Start all anchoring audio** button and keep the control page open;
+it unlocks a persistent browser audio context before any scheduled playback.
+Marking a program absent immediately creates and plays a localized cancellation
+announcement, and saves that alternate line with the event script. Saved script
+audio is synthesized server-side and played through the unlocked audio context,
+not timer-triggered browser speech synthesis.
 The current announcement line can be edited and copied from the control panel.
 Per-item lines and edits are stored in that browser's local storage; event
 progress and schedule changes remain authoritative in SQLite and synchronize
@@ -88,23 +101,28 @@ programs one per line as `time | program title | speaker`, in announcement
 order, and provide the chief guest name when applicable. The selected presenter
 style, tone, date, venue, chief guest, speakers, and ordered program times are
 included as generation facts; the generator is instructed not to invent missing
-details. Saving and reopening the event preserves the entered schedule order.
+details. Saving sorts these entries by scheduled time; the Live Event control
+can then manually rearrange the live order.
 
 ## Speaker capture and summary workflow
 
-When a speech or talk item becomes `on_stage`, `/control` requests browser
-microphone permission and records independently decodable audio segments every
-25 seconds.
+When a speech, talk, or announcement item becomes `on_stage`, `/control`
+requests browser microphone permission and records independently decodable
+audio segments every 25 seconds. Other supported summary types remain
+available for manual capture and summary.
 Each segment is uploaded separately; transcription runs via `asyncio.to_thread`
 and Faster-Whisper's VAD filter. A server-side microphone is not required. If
 the browser mic is unavailable, operators can paste notes or corrected text.
 Malayalam transcription is editable because recognition accuracy may be lower.
 
 Eight seconds of low input audio (configurable in `config/ava.yaml`) or a
-transcribed “thank you” cue only reveals a suggestion. It never finishes a
-speech without operator confirmation. On confirmation, AVA summarizes the
-transcript in 2–3 short sentences; summaries are restricted to speech and talk
-schedule items. Long transcripts use chunk summaries before
+transcribed “thank you” cue only reveals a suggestion. At the item's scheduled
+end time (scheduled start plus duration, or the next item's scheduled time when
+duration is unset), AVA stops capture, saves the transcript, generates and
+speaks its summary, then waits for the next item's scheduled time before its
+transition and introduction. The operator may still finish a speech manually.
+AVA summarizes the transcript in 2–3 short sentences; summaries are restricted
+to supported speech-like schedule items. Long transcripts use chunk summaries before
 the final summary. `speaker_summary` is routed to Gemini when available, with
 the configured template backend as the resource/service fallback. The summarizer
 is instructed to use transcript facts only and validates the requested language,

@@ -79,8 +79,8 @@ Blank sample values are ignored.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `llm.default_model` / `GEMINI_MODEL` | `gemini-3.5-flash` | Primary Gemini model identifier |
-| `GEMINI_FALLBACK_MODEL` | `gemini-3.6-flash` | Optional Gemini model tried after primary model errors |
+| `llm.default_model` / `GEMINI_MODEL` | `gemini-3.6-flash` | Primary Gemini model identifier |
+| `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | Optional Gemini model tried after primary model errors |
 | `llm.timeout_seconds`, `llm.retries` | `60`, `2` | Per-attempt timeout and retry count |
 | `llm.latency_budget_ms`, route candidates | `30000`, per-model estimates | Select a candidate by estimated latency and minimum available memory |
 | `llm.routes` | task mappings | Select backend/model, optionally fallback and per-language routes |

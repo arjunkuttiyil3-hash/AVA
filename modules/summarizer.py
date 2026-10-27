@@ -53,7 +53,7 @@ class SpeakerSummarizer:
                 correction_reason=validation.reason,
             )
             validation = self._validate_summary(corrective, language)
-        return validation.text if validation.valid else self._unavailable(language)
+        return validation.text if validation.valid else ""
 
     def _generate(
         self,
@@ -69,12 +69,17 @@ class SpeakerSummarizer:
         correction = (
             f"The previous draft did not meet the output requirement ({correction_reason}). "
             "Correct the format using only the transcript below; do not reuse unsupported claims. "
+            "Do not explain what the transcript contains or lacks. "
             if correction_reason
             else ""
         )
         prompt = (
             "Summarize only the information explicitly present in the transcript. "
             "Do not invent details, interpretations, or quotes. "
+            "Include only facts, ideas, thanks, announcements, or requests actually spoken. "
+            "Never comment on the transcript, recording, speech quality, missing information, "
+            "or whether there is enough information. Omit unsupported or unclear content "
+            "instead of describing its absence. "
             f"Write in {language_label}. Speaker: {speaker or 'not specified'}. "
             f"{correction}{task}\nTranscript:\n{source}"
         )
@@ -89,15 +94,33 @@ class SpeakerSummarizer:
         validation = self.validator.validate(text, language, min_words=5)
         if not validation.valid:
             return validation
+        if _contains_transcript_commentary(validation.text):
+            return ValidationResult(False, validation.text, "transcript_commentary")
         if not 2 <= _sentence_count(validation.text) <= 3:
             return ValidationResult(False, validation.text, "sentence_count")
         return validation
 
     @staticmethod
     def _unavailable(language: str) -> str:
-        if language == "ml":
-            return "ട്രാൻസ്ക്രിപ്റ്റ് വളരെ ചുരുങ്ങിയതിനാൽ സംഗ്രഹം തയ്യാറാക്കാനായില്ല."
-        return "The summary could not be generated."
+        _ = language
+        return ""
+
+
+def _contains_transcript_commentary(text: str) -> bool:
+    """Reject meta-comments about recording/transcript quality instead of speech content."""
+    return bool(
+        re.search(
+            r"\b(?:transcript|recording|audio|speech)\b.{0,100}\b"
+            r"(?:does not|doesn't|did not|didn't|contains? no|has no|lacks?|"
+            r"is (?:too short|unclear|incomplete)|provides? no|includes? no)\b"
+            r"|\b(?:does not|doesn't|did not|didn't)\s+contain\s+"
+            r"(?:any\s+)?(?:other\s+)?(?:information|details|content)\b"
+            r"|\bno (?:other |additional )?(?:information|details|content)\b"
+            r"|\b(?:not enough|insufficient) information\b",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
 
 
 def _sentence_count(text: str) -> int:

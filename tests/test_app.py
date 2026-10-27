@@ -551,13 +551,130 @@ def test_control_schedule_crud_and_reorder_routes(tmp_path: Path, monkeypatch) -
         assert skipped.json()["items"][-1]["id"] == added_item["id"]
         assert skipped.json()["items"][-1]["status"] == "skipped"
 
+        started = client.post(
+            f"/api/live-events/{event_id}/start",
+            json={"defer_first_item": True},
+        )
+        assert started.status_code == 200
+        assert started.json()["status"] == "running"
+        assert started.json()["current_item_id"] is None
+
         ended = client.post(f"/api/live-events/{event_id}/end")
         assert ended.status_code == 200
         assert "Thank you for joining us" in ended.json()["closing_script"]
-        assert client.post(
-            "/api/event/items", json={"event_id": event_id, "title": "Too late"}
-        ).status_code == 422
+        post_end_edit = client.post(
+            "/api/event/items", json={"event_id": event_id, "title": "Post-event edit"}
+        )
+        assert post_end_edit.status_code == 200
+        assert post_end_edit.json()["status"] == "ended"
         assert client.post(f"/api/live-events/{event_id}/start").status_code == 422
+
+
+def test_absent_item_announcement_and_saved_script_audio(tmp_path: Path, monkeypatch) -> None:
+    from interface import api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "collect_health",
+        lambda settings: {
+            "gemini": {"available": False, "configured": False, "message": "not configured"},
+            "ffmpeg": {"available": True, "message": "ok"},
+            "microphone": {"available": True, "message": "ok"},
+            "database": {"available": True, "message": str(settings.database_path)},
+        },
+    )
+    settings = AppSettings(
+        config_path=tmp_path / "ava.yaml",
+        memory={"database_path": str(tmp_path / "audio-routes.sqlite3")},
+        llm={"routes": {"default": {"backend": "template"}}},
+        speech={"cache_dir": str(tmp_path / "audio")},
+        robot={"mode": "simulated"},
+    )
+    application = create_app(settings)
+
+    async def no_audio(
+        text: str,
+        language: str,
+        *,
+        voice: str | None = None,
+        cache_version: int | str | None = None,
+    ) -> Path:
+        _ = (text, language, voice, cache_version)
+        path = tmp_path / "audio" / "test-script.mp3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"test-audio")
+        return path
+
+    with TestClient(application) as client:
+        application.state.pipeline.synthesizer.synthesize = no_audio
+        session_id = client.post("/api/sessions").json()["session_id"]
+        event = client.post(
+            "/api/events",
+            json={
+                "session_id": session_id,
+                "name": "Community program",
+                "schedule": [{
+                    "title": "Guest speech",
+                    "type": "speech",
+                    "person_name": "Asha Nair",
+                }],
+            },
+        ).json()
+        event_id = event["id"]
+        item = application.state.event_service.get_event(event_id)["items"][0]
+        application.state.event_service.save_script(
+            event_id,
+            [
+                {
+                    "id": f"intro-{item['id']}",
+                    "type": "intro",
+                    "itemId": item["id"],
+                    "text": "Please welcome Asha Nair.",
+                    "estimatedSeconds": 4,
+                    "edited": False,
+                },
+                {
+                    "id": "opening",
+                    "type": "opening",
+                    "itemId": None,
+                    "text": "Welcome to the community program.",
+                    "estimatedSeconds": 4,
+                    "edited": False,
+                },
+            ],
+        )
+        application.state.event_service.update_item(
+            event_id, item["id"], {"status": "absent"}
+        )
+
+        notice = client.post(
+            f"/api/live-events/{event_id}/items/{item['id']}/absence-announcement"
+        )
+        assert notice.status_code == 200
+        assert "Asha Nair is unable to join us" in notice.json()["text"]
+        assert "cancelled" in notice.json()["text"]
+        assert notice.json()["url"].startswith("/api/audio/")
+        saved = application.state.event_service.get_script(event_id)
+        absence = next(
+            segment for segment in saved["segments"]
+            if segment["id"] == f"absence-{item['id']}"
+        )
+        assert absence["text"] == notice.json()["text"]
+        assert absence["type"] == "absence"
+
+        blocked_script = client.get(
+            f"/api/live-events/{event_id}/scripts/intro-{item['id']}/audio"
+        )
+        assert blocked_script.status_code == 409
+        absence_audio = client.get(
+            f"/api/live-events/{event_id}/scripts/absence-{item['id']}/audio"
+        )
+        assert absence_audio.status_code == 200
+        opening = client.get(
+            f"/api/live-events/{event_id}/scripts/opening/audio"
+        )
+        assert opening.status_code == 200
+        assert opening.json()["url"].startswith("/api/audio/")
 
 
 def test_next_and_call_now_speak_live_schedule_with_template_on_llm_failure(
@@ -974,3 +1091,51 @@ def test_structured_script_generation_protects_hand_edited_segments(
         completed = client.post(f"/api/live-events/{event_id}/end")
         assert completed.status_code == 200
         assert completed.json()["status"] == "ended"
+
+        updated_event = client.patch(
+            f"/api/live-events/{event_id}", json={"name": "Arts night revisited"}
+        )
+        assert updated_event.status_code == 200, updated_event.text
+        assert updated_event.json()["status"] == "ended"
+        updated_item = client.patch(
+            f"/api/event/items/{item_id}",
+            json={"event_id": event_id, "title": "Revised welcome address"},
+        )
+        assert updated_item.status_code == 200, updated_item.text
+
+        def ended_event_stream(_intent, _language, _messages):
+            return iter([json.dumps({"segments": [
+                {
+                    "id": "opening", "type": "opening", "itemId": None,
+                    "text": "Welcome back to Arts night.", "estimatedSeconds": 8,
+                },
+                {
+                    "id": "closing", "type": "closing", "itemId": None,
+                    "text": "Thank you for joining us again.", "estimatedSeconds": 6,
+                },
+            ]})]), SimpleNamespace(backend="gemini", model="gemini-test")
+
+        application.state.pipeline.router.stream = ended_event_stream
+        regenerated = client.post(
+            "/api/anchoring/scripts/generate", json={"event_id": event_id}
+        )
+        assert regenerated.status_code == 200, regenerated.text
+        assert "Welcome back" in regenerated.json()["segments"][0]["text"]
+
+        def template_after_rate_limit(_intent, _language, _messages):
+            return iter(["template text"]), SimpleNamespace(
+                backend="template",
+                model="template",
+                failure_status=429,
+                failure_detail=(
+                    "Gemini API rate limit or quota exceeded (HTTP 429). "
+                    "Provider detail: RESOURCE_EXHAUSTED"
+                ),
+            )
+
+        application.state.pipeline.router.stream = template_after_rate_limit
+        rate_limited = client.post(
+            "/api/anchoring/scripts/generate", json={"event_id": event_id}
+        )
+        assert rate_limited.status_code == 503
+        assert "RESOURCE_EXHAUSTED" in rate_limited.json()["detail"]

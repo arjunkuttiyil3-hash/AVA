@@ -26,6 +26,10 @@ _clients: dict[str, genai.Client] = {}
 class GeminiRequestError(RuntimeError):
     """Friendly failure safe to show in the AVA interface."""
 
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def api_key() -> str:
     """Return the configured API key or raise an actionable setup error."""
@@ -41,7 +45,7 @@ def api_key() -> str:
 def model_name() -> str:
     """Return the Gemini model selected in the environment."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
-    return os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
+    return os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip() or "gemini-3.6-flash"
 
 
 def fallback_model_name() -> str:
@@ -106,23 +110,59 @@ def _friendly_error(exc: Exception) -> GeminiRequestError:
     status = _status_code(exc)
     name = type(exc).__name__.lower()
     message = str(exc).lower()
+    detail = " ".join(str(exc).split())
+    configured_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if configured_key:
+        detail = detail.replace(configured_key, "[redacted]")
+    if len(detail) > 600:
+        detail = f"{detail[:597]}..."
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or "timeout" in name:
-        return GeminiRequestError("Gemini request timed out after 60 seconds.")
+        return GeminiRequestError(
+            f"Gemini request timed out after {REQUEST_TIMEOUT_SECONDS} seconds.",
+            status_code=status,
+        )
     if status == 429:
-        return GeminiRequestError("Rate limit reached, wait a moment and try again.")
+        return GeminiRequestError(
+            "Gemini API rate limit or quota exceeded (HTTP 429). Check the "
+            f"Google AI Studio quota and billing for the configured model. Provider detail: {detail}",
+            status_code=status,
+        )
     if status == 404:
         return GeminiRequestError(
-            "Gemini model was not found. Check GEMINI_MODEL and GEMINI_FALLBACK_MODEL."
+            "Gemini model was not found (HTTP 404). Check that GEMINI_MODEL and "
+            f"GEMINI_FALLBACK_MODEL are available to the Gemini API key. Provider detail: {detail}",
+            status_code=status,
+        )
+    if status in {401, 403}:
+        return GeminiRequestError(
+            f"Gemini rejected the API key or access to the selected model (HTTP {status}). "
+            f"Check GEMINI_API_KEY and model permissions. Provider detail: {detail}",
+            status_code=status,
+        )
+    if status == 400:
+        return GeminiRequestError(
+            f"Gemini rejected the request (HTTP 400). Check the selected model and request format. "
+            f"Provider detail: {detail}",
+            status_code=status,
         )
     if status is not None and status >= 500:
-        return GeminiRequestError("Gemini is temporarily unavailable. Please try again.")
+        return GeminiRequestError(
+            f"Gemini is temporarily unavailable (HTTP {status}). Provider detail: {detail}",
+            status_code=status,
+        )
     if (
         status == 0
         or any(token in name for token in ("connecterror", "networkerror", "connectionerror"))
         or any(token in message for token in ("network is unreachable", "name resolution", "connection refused"))
     ):
-        return GeminiRequestError("No internet connection or Gemini service is unreachable.")
-    return GeminiRequestError(f"Gemini request failed ({type(exc).__name__}).")
+        return GeminiRequestError(
+            f"No internet connection or Gemini service is unreachable. Provider detail: {detail}",
+            status_code=status,
+        )
+    return GeminiRequestError(
+        f"Gemini request failed ({type(exc).__name__}). Provider detail: {detail}",
+        status_code=status,
+    )
 
 
 def _retryable(exc: Exception) -> bool:

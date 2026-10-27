@@ -19,6 +19,11 @@
 .progress-copy { display: flex; justify-content: space-between; margin-bottom: 7px; color: var(--muted); font-size: 10px; }
 .progress-track { height: 6px; overflow: hidden; border-radius: 8px; background: #1d302c12; }
 .progress-track div { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--mint), var(--lavender)); transition: width .25s; }
+.start-anchoring-panel { display: grid; gap: 7px; margin-top: 16px; }
+.start-anchoring-panel p { margin: 0; color: var(--muted); font-size: 10px; }
+.start-anchoring-button { width: 100%; min-height: 64px; border-radius: 11px; color: #fff; background: linear-gradient(110deg, #126b63, #258f82); box-shadow: 0 8px 20px #167c7330; font-size: 16px; font-weight: 800; letter-spacing: .04em; }
+.start-anchoring-button:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+.start-anchoring-button:disabled { cursor: not-allowed; opacity: .58; }
 .current-next-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 13px; }
 .current-next-items > div { display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #f7faf8; }
 .current-next-items strong { overflow-wrap: anywhere; font-size: 11px; }
