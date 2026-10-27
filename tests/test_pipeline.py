@@ -28,7 +28,7 @@ class StoryBackend:
         *,
         format_schema: dict[str, Any] | None = None,
     ) -> Iterator[str]:
-        if model != "gemini-3.5-flash" or format_schema is not None:
+        if model != "gemini-3.6-flash" or format_schema is not None:
             return iter(())
         self.requests.append([dict(message) for message in messages])
         prompt = "\n".join(message["content"] for message in messages)
@@ -138,10 +138,10 @@ def test_robot_kerala_story_continues_when_user_adds_student(tmp_path: Path) -> 
         settings = AppSettings(
             config_path=tmp_path / "ava.yaml",
             llm={
-                "default_model": "gemini-3.5-flash",
+                "default_model": "gemini-3.6-flash",
                 "routes": {
-                    "story_request": {"backend": "gemini", "model": "gemini-3.5-flash"},
-                    "story_followup": {"backend": "gemini", "model": "gemini-3.5-flash"},
+                    "story_request": {"backend": "gemini", "model": "gemini-3.6-flash"},
+                    "story_followup": {"backend": "gemini", "model": "gemini-3.6-flash"},
                     "default": {"backend": "template"},
                 },
             },
@@ -236,11 +236,11 @@ def test_anchoring_prompt_uses_live_schedule_and_drops_absent_person_sentence(
                 "routes": {
                     "anchoring_script": {
                         "backend": "gemini",
-                        "model": "gemini-3.5-flash",
+                        "model": "gemini-3.6-flash",
                     },
                     "schedule_next": {
                         "backend": "gemini",
-                        "model": "gemini-3.5-flash",
+                        "model": "gemini-3.6-flash",
                     },
                     "default": {"backend": "template"},
                 }
@@ -287,9 +287,9 @@ def test_malayalam_mode_uses_script_prompt_and_matching_voice(tmp_path: Path) ->
         settings = AppSettings(
             config_path=tmp_path / "ava.yaml",
             llm={
-                "default_model": "gemini-3.5-flash",
+                "default_model": "gemini-3.6-flash",
                 "routes": {
-                    "default": {"backend": "gemini", "model": "gemini-3.5-flash"}
+                    "default": {"backend": "gemini", "model": "gemini-3.6-flash"}
                 },
             },
         )

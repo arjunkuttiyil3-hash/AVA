@@ -80,10 +80,44 @@ def test_summarizer_retries_invalid_sentence_count_from_transcript_only() -> Non
 
 def test_empty_or_short_transcript_returns_explicit_notice() -> None:
     summarizer = SpeakerSummarizer(SummaryRouter("unreachable"))
-    assert "could not be generated" in summarizer.summarize(
-        "Thank you.", language="en"
-    ).lower()
-    assert "സംഗ്രഹം" in summarizer.summarize("നന്ദി.", language="ml")
+    assert summarizer.summarize("Thank you.", language="en") == ""
+    assert summarizer.summarize("നന്ദി.", language="ml") == ""
+
+
+def test_summarizer_rejects_transcript_meta_commentary() -> None:
+    transcript = (
+        "The speaker thanked the students for their work on the garden project. "
+        "They will plant native seeds next week."
+    )
+    router = SequenceSummaryRouter([
+        "The transcript does not contain any other information. "
+        "No additional details were provided.",
+        "The speaker thanked students for their garden project work. "
+        "They will plant native seeds next week.",
+    ])
+
+    summary = SpeakerSummarizer(router).summarize(transcript, language="en")
+
+    assert summary == (
+        "The speaker thanked students for their garden project work. "
+        "They will plant native seeds next week."
+    )
+    assert "Never comment on the transcript" in router.prompts[0]
+    assert "transcript_commentary" in router.prompts[1]
+
+
+def test_unfixed_transcript_meta_commentary_is_not_returned() -> None:
+    router = SequenceSummaryRouter([
+        "The transcript does not contain any other information. "
+        "No additional details were provided.",
+        "The transcript does not contain any other information. "
+        "No additional details were provided.",
+    ])
+
+    assert SpeakerSummarizer(router).summarize(
+        "The speaker shared a message with the audience about the program.",
+        language="en",
+    ) == ""
 
 
 def test_long_transcript_uses_map_reduce() -> None:

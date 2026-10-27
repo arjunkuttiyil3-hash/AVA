@@ -117,6 +117,6 @@ def test_router_selects_candidate_within_latency_and_memory_limits(
         "chat_question", "en", latency_budget_ms=6000, available_memory_mb=1024
     )
 
-    assert selected["model"] == "gemini-3.5-flash"
+    assert selected["model"] == "gemini-3.6-flash"
     assert "gemini-3.6-flash" in selected["_selection_reason"]
     assert "6000 ms" in selected["_selection_reason"]

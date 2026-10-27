@@ -102,11 +102,15 @@ def test_stream_does_not_switch_models_after_emitting_text(monkeypatch) -> None:
     monkeypatch.setattr(llm, "MAX_RETRIES", 0)
     monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(aio=SimpleNamespace(models=models)))
 
-    with pytest.raises(llm.GeminiRequestError, match="Rate limit reached"):
+    with pytest.raises(
+        llm.GeminiRequestError, match="rate limit or quota exceeded \\(HTTP 429\\)"
+    ) as error:
         asyncio.run(collect_stream(llm.llm_stream(
             [{"role": "user", "content": "Hello"}], model="primary"
         )))
 
+    assert error.value.status_code == 429
+    assert "Provider detail: HTTP 429" in str(error.value)
     assert models.models == ["primary"]
 
 

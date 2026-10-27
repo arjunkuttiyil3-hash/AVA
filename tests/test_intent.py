@@ -48,7 +48,7 @@ def test_ambiguous_intent_uses_json_schema_model_fallback(tmp_path) -> None:
                 "routes": {
                     "intent_classifier": {
                         "backend": "gemini",
-                        "model": "gemini-3.5-flash",
+                        "model": "gemini-3.6-flash",
                     }
                 }
             },
@@ -61,6 +61,6 @@ def test_ambiguous_intent_uses_json_schema_model_fallback(tmp_path) -> None:
     assert result.intent == "smalltalk"
     assert result.source == "llm"
     assert backend.schema["type"] == "object"
-    assert backend.model == "gemini-3.5-flash"
+    assert backend.model == "gemini-3.6-flash"
     assert "Perhaps something different" in backend.prompt
     assert "story_followup" in backend.schema["properties"]["intent"]["enum"]
