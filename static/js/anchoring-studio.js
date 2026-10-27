@@ -16,9 +16,11 @@
     autoCloseBusy: false,
     retryTargets: null,
     saveTimer: 0,
+    draftGeneration: 0,
     speechRecorder: null,
     speechStream: null,
     speechChunks: [],
+    discardSpeechSample: false,
   };
   const typeOptions = [
     ["participant", "Participant"],
@@ -44,6 +46,7 @@
   }
 
   async function transcribeSpeechSample(blob) {
+    const generation = state.draftGeneration;
     if (!blob.size) {
       setError($("#speech-test-error"), "The recording was empty. Please record again.");
       setSpeechStatus("No audio captured");
@@ -60,11 +63,13 @@
       if (!result.text.trim()) {
         throw new Error("No speech was recognized. Try a clearer or longer recording.");
       }
+      if (generation !== state.draftGeneration) return;
       $("#speech-test-transcript").value = result.text;
       $("#speech-commentary-result").hidden = true;
       setError($("#speech-test-error"));
       setSpeechStatus(`Transcribed · ${result.language}`);
     } catch (error) {
+      if (generation !== state.draftGeneration) return;
       setError($("#speech-test-error"), error.message);
       setSpeechStatus("Transcription failed");
     } finally {
@@ -97,7 +102,11 @@
         state.speechChunks = [];
         releaseSpeechStream();
         $("#speech-record-stop").disabled = true;
-        void transcribeSpeechSample(recording);
+        if (state.discardSpeechSample) {
+          state.discardSpeechSample = false;
+        } else {
+          void transcribeSpeechSample(recording);
+        }
       }, { once: true });
       state.speechRecorder.start();
       $("#speech-record-start").disabled = true;
@@ -126,6 +135,7 @@
     setError($("#speech-test-error"));
     if (!state.event && !(await saveEvent())) return;
     const button = $("#speech-analyze");
+    const generation = state.draftGeneration;
     button.disabled = true;
     button.textContent = "Analyzing speech…";
     setSpeechStatus("Finding key points and drafting an anchoring comment…");
@@ -135,6 +145,7 @@
         transcript,
         form.elements.namedItem("language").value || state.event.language || "en",
       );
+      if (generation !== state.draftGeneration) return;
       const points = $("#speech-key-points");
       points.replaceChildren();
       result.key_points.forEach((point) => {
@@ -146,6 +157,7 @@
       $("#speech-commentary-result").hidden = false;
       setSpeechStatus("Commentary draft ready");
     } catch (error) {
+      if (generation !== state.draftGeneration) return;
       setError($("#speech-test-error"), error.message);
       setSpeechStatus("Analysis failed");
     } finally {
@@ -358,8 +370,13 @@
   }
 
   async function saveEvent() {
+    if (state.requestPending) return false;
     sortItemsByScheduledTime();
     if (!validateForm()) return;
+    state.requestPending = true;
+    $("#studio-new-event").disabled = true;
+    $("#save-event-details").disabled = true;
+    $("#generate-script").disabled = true;
     const payload = formValues();
     payload.session_id = state.sessionId;
     payload.language = payload.language || "en";
@@ -439,6 +456,11 @@
     } catch (error) {
       setError($("#studio-validation-error"), error.message);
       return false;
+    } finally {
+      state.requestPending = false;
+      $("#studio-new-event").disabled = false;
+      $("#save-event-details").disabled = false;
+      $("#generate-script").disabled = false;
     }
   }
 
@@ -511,7 +533,7 @@
   }
 
   async function regenerateTargets(targets, replaceEditedIds = []) {
-    if (!state.event) return;
+    if (!state.event || state.requestPending) return;
     const replace = new Set(replaceEditedIds);
     const editedTargets = targets.filter((target) => (
       state.script.some((segment) => segment.id === target.id && segment.edited)
@@ -525,6 +547,8 @@
       else targets = targets.filter((target) => !editedTargets.some((edited) => edited.id === target.id));
     }
     if (!targets.length) return;
+    state.requestPending = true;
+    $("#studio-new-event").disabled = true;
     $("#script-loading").hidden = false;
     state.retryTargets = targets;
     setError($("#script-error"));
@@ -551,6 +575,8 @@
       $("#retry-script").hidden = false;
     } finally {
       $("#script-loading").hidden = true;
+      state.requestPending = false;
+      $("#studio-new-event").disabled = false;
     }
   }
 
@@ -757,6 +783,48 @@
   form.addEventListener("input", saveDraft);
   form.addEventListener("change", saveDraft);
   $("#save-event-details").addEventListener("click", () => { void saveEvent(); });
+  $("#studio-new-event").addEventListener("click", () => {
+    if (state.requestPending) {
+      setError($("#studio-validation-error"), "Wait for the current save or script generation to finish before starting a new event.");
+      return;
+    }
+    if (!window.confirm(
+      "Start a new event? This clears the current Studio form, running order, and script from this draft. Any event already saved will remain available in Live Event Control.",
+    )) return;
+    window.clearTimeout(state.saveTimer);
+    state.draftGeneration += 1;
+    if (state.speechRecorder?.state === "recording") {
+      state.discardSpeechSample = true;
+      state.speechRecorder.stop();
+    }
+    releaseSpeechStream();
+    state.speechRecorder = null;
+    state.speechChunks = [];
+    state.event = null;
+    state.script = [];
+    state.retryTargets = null;
+    form.reset();
+    form.querySelectorAll("[aria-invalid]").forEach((field) => field.removeAttribute("aria-invalid"));
+    renderItems([]);
+    renderScript();
+    $("#undo-script").disabled = true;
+    $("#retry-script").hidden = true;
+    $("#script-loading").hidden = true;
+    $("#speech-test-transcript").value = "";
+    $("#speech-commentary-script").value = "";
+    $("#speech-key-points").replaceChildren();
+    $("#speech-commentary-result").hidden = true;
+    setError($("#studio-validation-error"));
+    setError($("#script-error"));
+    setError($("#speech-test-error"));
+    setSpeechStatus("Microphone is off");
+    $("#speech-record-start").disabled = false;
+    $("#speech-record-stop").disabled = true;
+    localStorage.removeItem("ava-event-id");
+    saveDraft();
+    $("#studio-save-status").textContent = "New event draft";
+    form.elements.namedItem("name").focus();
+  });
   $("#speech-record-start").addEventListener("click", () => {
     void startSpeechTestRecording();
   });

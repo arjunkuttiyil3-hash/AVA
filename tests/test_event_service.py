@@ -156,7 +156,7 @@ def test_restore_moves_a_late_item_to_requested_position(tmp_path: Path) -> None
     assert restored["items"][1]["status"] == "pending"
 
 
-def test_ended_event_can_be_edited_without_restarting(tmp_path: Path) -> None:
+def test_ended_event_can_be_edited_and_restarted(tmp_path: Path) -> None:
     service, event_id = make_service(tmp_path)
     ended = service.update_event(event_id, {"status": "ended"})
     first_item = ended["items"][0]
@@ -174,12 +174,35 @@ def test_ended_event_can_be_edited_without_restarting(tmp_path: Path) -> None:
     assert next(item for item in updated["items"] if item["id"] == first_item["id"])[
         "status"
     ] == "removed"
-    with pytest.raises(ValueError, match="cannot be restarted"):
+    with pytest.raises(ValueError, match="restarted through the start action"):
         service.update_event(event_id, {"status": "running"})
-    with pytest.raises(ValueError, match="cannot be resumed"):
-        service.start(event_id)
-    with pytest.raises(ValueError, match="cannot be advanced"):
-        service.advance(event_id)
+    restarted = service.start(event_id)
+    first_eligible = next(
+        item for item in updated["items"]
+        if item["status"] not in {"absent", "removed", "skipped"}
+    )
+    assert restarted["status"] == "running"
+    assert restarted["current_item_id"] == first_eligible["id"]
+
+
+def test_restarting_ended_event_replays_schedule_and_preserves_exclusions(
+    tmp_path: Path,
+) -> None:
+    service, event_id = make_service(tmp_path)
+    initial = service.start(event_id)
+    first, second, third = initial["items"]
+    service.advance(event_id)
+    service.skip_item(event_id, third["id"])
+    service.update_event(event_id, {"status": "ended"})
+
+    restarted = service.start(event_id)
+
+    assert restarted["status"] == "running"
+    assert restarted["current_item_id"] == first["id"]
+    statuses = {item["id"]: item["status"] for item in restarted["items"]}
+    assert statuses[first["id"]] == "on_stage"
+    assert statuses[second["id"]] == "pending"
+    assert statuses[third["id"]] == "skipped"
 
 
 def test_session_event_lookup_prefers_the_active_event(tmp_path: Path) -> None:

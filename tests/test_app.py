@@ -567,7 +567,10 @@ def test_control_schedule_crud_and_reorder_routes(tmp_path: Path, monkeypatch) -
         )
         assert post_end_edit.status_code == 200
         assert post_end_edit.json()["status"] == "ended"
-        assert client.post(f"/api/live-events/{event_id}/start").status_code == 422
+        restarted = client.post(f"/api/live-events/{event_id}/start")
+        assert restarted.status_code == 200
+        assert restarted.json()["status"] == "running"
+        assert restarted.json()["current_item_id"] == post_end_edit.json()["items"][0]["id"]
 
 
 def test_absent_item_announcement_and_saved_script_audio(tmp_path: Path, monkeypatch) -> None:
@@ -764,6 +767,28 @@ def test_next_and_call_now_speak_live_schedule_with_template_on_llm_failure(
         assert "Thank you, Anu" in call_result["text"]
         assert "Music performance" in call_result["text"]
         assert call_result["event"]["current_item_id"] == items[2]["id"]
+
+        fourth_item = application.state.event_service.add_item(
+            event_id, {"title": "Closing performance", "type": "performance"}
+        )["items"][-1]
+
+        def wrong_language_announcement(*args, **kwargs):
+            _ = (args, kwargs)
+            return ["यह घोषणा हिन्दी में है।"], SimpleNamespace(
+                backend="gemini", model="gemini-test"
+            )
+
+        application.state.pipeline.router.stream = wrong_language_announcement
+        wrong_language_response = client.post(
+            f"/api/live-events/{event_id}/call-now",
+            json={"item_id": fourth_item["id"]},
+        )
+        assert wrong_language_response.status_code == 200
+        assert wrong_language_response.json()["used_fallback"] is True
+        assert wrong_language_response.json()["text"] == (
+            "We now move to Closing performance."
+        )
+        assert "did not match the event language" in wrong_language_response.json()["notice"]
 
 
 def test_finished_speaker_summary_is_saved_and_used_in_next_transition(
@@ -1139,3 +1164,23 @@ def test_structured_script_generation_protects_hand_edited_segments(
         )
         assert rate_limited.status_code == 503
         assert "RESOURCE_EXHAUSTED" in rate_limited.json()["detail"]
+
+        def wrong_language_script(_intent, _language, _messages):
+            return iter([json.dumps({"segments": [{
+                "id": "opening",
+                "type": "opening",
+                "itemId": None,
+                "text": "यह उद्घाटन हिन्दी में है।",
+                "estimatedSeconds": 8,
+            }]})]), SimpleNamespace(backend="gemini", model="gemini-test")
+
+        application.state.pipeline.router.stream = wrong_language_script
+        wrong_language_script_response = client.post(
+            "/api/anchoring/scripts/generate",
+            json={
+                "event_id": event_id,
+                "targets": [{"id": "opening", "type": "opening", "itemId": None}],
+            },
+        )
+        assert wrong_language_script_response.status_code == 502
+        assert "does not match the event language" in wrong_language_script_response.json()["detail"]

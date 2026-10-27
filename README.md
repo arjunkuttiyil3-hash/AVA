@@ -125,6 +125,9 @@ cancels current browser playback and signals the active response stream to stop.
 ## Live event control and speaker summaries
 
 1. Create an event and schedule from **Anchoring** on the main page.
+   To prepare another event, choose **New event** in Anchoring Studio. It clears
+   the current form, running order, speech rehearsal, and script draft in this
+   browser; previously saved events remain available in Live Event Control.
    In Anchoring Studio, **Speech rehearsal** can record a speech sample or take
    pasted text, transcribe it, extract key points, and draft a spoken response
    using the event context. Review the editable comment and use **Speak comment**

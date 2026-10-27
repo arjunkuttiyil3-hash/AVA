@@ -434,7 +434,7 @@ class EventService:
                 and "status" in changes
                 and changes["status"] != "ended"
             ):
-                raise ValueError("An ended event cannot be restarted.")
+                raise ValueError("An ended event must be restarted through the start action.")
             old = {key: event[key] for key in changes}
             self._record_undo(connection, event_id)
             columns = ", ".join(f"{key} = ?" for key in changes)
@@ -841,7 +841,30 @@ class EventService:
         """Start an event, optionally waiting for its first scheduled item."""
         event = self.get_event(event_id)
         if event["status"] == "ended":
-            raise ValueError("An ended event cannot be resumed.")
+            with connection_scope(self.database_path) as connection:
+                current = self._require_event(connection, event_id)
+                self._record_undo(connection, event_id)
+                connection.execute(
+                    """UPDATE schedule_items SET status = 'pending'
+                       WHERE event_id = ? AND status IN ('done', 'on_stage')""",
+                    (event_id,),
+                )
+                connection.execute(
+                    """UPDATE event_control SET current_item_id = NULL, status = 'running',
+                       state_version = state_version + 1 WHERE id = ?""",
+                    (event_id,),
+                )
+                self._audit(
+                    connection,
+                    event_id,
+                    "restarted",
+                    {"current_item_id": current["current_item_id"], "status": "ended"},
+                    {"current_item_id": None, "status": "running"},
+                    "operator",
+                )
+            if defer_first_item:
+                return self.get_event(event_id)
+            return self.advance(event_id, 1)
         if defer_first_item and event["status"] == "not_started":
             with connection_scope(self.database_path) as connection:
                 current = self._require_event(connection, event_id)

@@ -51,3 +51,53 @@ def test_edge_tts_failure_falls_back_and_exposes_notice(tmp_path, monkeypatch) -
     assert output.is_file()
     assert synthesizer.get_status(output)
     assert "offline speech" in synthesizer.get_status(output)
+
+
+def test_synthesis_uses_a_voice_matching_the_requested_language(tmp_path, monkeypatch) -> None:
+    import asyncio
+    import sys
+    import types
+
+    requested_voices: list[str] = []
+
+    class RecordingCommunicator:
+        def __init__(self, _text, voice: str, **_kwargs) -> None:
+            requested_voices.append(voice)
+
+        async def save(self, output_path: str) -> None:
+            from pathlib import Path
+
+            Path(output_path).write_bytes(b"audio")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "edge_tts",
+        types.SimpleNamespace(Communicate=RecordingCommunicator),
+    )
+    synthesizer = SpeechSynthesizer(cache_dir=tmp_path)
+
+    async def synthesize() -> None:
+        await synthesizer.synthesize(
+            "English announcement.", "en", voice="ml-IN-SobhanaNeural"
+        )
+        await synthesizer.synthesize(
+            "മലയാളം അറിയിപ്പ്.", "ml", voice="en-IN-NeerjaNeural"
+        )
+
+    asyncio.run(synthesize())
+
+    assert requested_voices == ["en-IN-NeerjaNeural", "ml-IN-SobhanaNeural"]
+
+
+def test_offline_voice_selection_requires_english_locale() -> None:
+    from types import SimpleNamespace
+
+    english_voice = SimpleNamespace(
+        id="english", name="English voice", languages=[b"\x05en-US"]
+    )
+    hindi_voice = SimpleNamespace(
+        id="hindi", name="Hindi voice", languages=[b"\x05hi-IN"]
+    )
+
+    assert SpeechSynthesizer._voice_matches_language(english_voice, "en")
+    assert not SpeechSynthesizer._voice_matches_language(hindi_voice, "en")

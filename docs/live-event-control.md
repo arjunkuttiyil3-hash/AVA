@@ -68,12 +68,16 @@ browser audio and requests the robot's stop gesture.
 The operator console presents the persisted `pending`, `arrived`, `on_stage`,
 and `done` values as scheduled, present, in progress, and completed. This keeps
 existing databases and speaker-capture logic compatible. Paused events resume
-through the existing start route. Ended events remain closed to live playback
-and advancement, but their details, schedule, and anchoring scripts can still
+through the existing start route. Ended events can be restarted from the
+beginning; completed items are reset while absent, skipped, and removed items
+remain excluded. Their details, schedule, and anchoring scripts can still
 be edited and regenerated from Anchoring Studio. The closing line is returned
 when the operator ends an event.
-Starting or resuming from `/control` unlocks browser audio and schedules the
-opening at the event's start time using the operator's laptop clock. Studio
+Starting from `/control` unlocks browser audio and immediately begins the first
+eligible program, regardless of the event's configured start time. Restarting
+an ended event replays its schedule from the beginning. Resuming a
+running event re-enables audio and resumes scheduled playback. Subsequent
+programs follow their scheduled times on the operator's laptop clock. Studio
 saves running-order items in scheduled-time order; the live console's up/down
 controls can then override that order, and automatic playback follows the
 authoritative live order. The opening, item introductions, transitions, and
@@ -85,6 +89,12 @@ manual **Next item** / **Call now** control. The operator can edit the title,
 type, speaker, duration, details, and scheduled time or add items while the
 event is live; schedule changes are persisted and synchronized to connected
 control windows.
+Generated live announcements and saved scripts are checked against the event's
+English or Malayalam language before they are spoken. A live announcement that
+fails the language check uses a fixed-language fallback; a mismatched saved
+script must be regenerated. TTS ignores a saved voice preference with the wrong
+language locale, and browser speech fallback is used only when a matching voice
+is available.
 Use the large **Start all anchoring audio** button and keep the control page open;
 it unlocks a persistent browser audio context before any scheduled playback.
 Marking a program absent immediately creates and plays a localized cancellation

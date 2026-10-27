@@ -32,8 +32,6 @@
   let scheduleSignature = "";
   let finishTimer = null;
   let finishSignature = "";
-  let pendingStartTimer = null;
-  let startPending = false;
   let autoFinishingItemId = 0;
   let savedScriptSegments = [];
   let openingPlayedEventId = 0;
@@ -174,14 +172,16 @@
       && !["absent", "removed", "skipped", "done"].includes(item.status));
     $("#current-item-label").textContent = current ? current.title : "No current item";
     $("#next-item-label").textContent = upcoming ? upcoming.title : "No upcoming item";
-    $("#start-event").textContent = startPending
-      ? "Start anchoring now"
+    $("#start-event").textContent = event.status === "ended"
+      ? "Restart anchoring"
       : event.status === "paused" ? "Resume anchoring"
-        : event.status === "running" ? "Resume anchoring audio" : "Start anchoring";
+        : event.status === "running" ? "Resume anchoring audio" : "Start anchoring now";
     $("#start-event-help").textContent = event.status === "running"
       ? "Anchoring is live. Press this button to re-enable audio and resume scheduled playback."
-      : "Enable audio now; AVA will begin speaking at the scheduled event time on this laptop.";
-    $("#start-event").disabled = event.status === "ended";
+      : event.status === "ended"
+        ? "Replay from the beginning. Completed items reset; absent, skipped, and removed items stay excluded."
+        : "Enable audio and start the first eligible program immediately. Later programs follow the laptop schedule.";
+    $("#start-event").disabled = false;
     $("#pause-event").disabled = event.status !== "running";
     $("#next-item").disabled = event.status === "ended";
     $("#previous-item").disabled = event.status === "ended";
@@ -598,11 +598,23 @@
     audioPlaybackActive = false;
   }
 
+  function setBrowserSpeechLanguage(utterance, language) {
+    const expectedLanguage = language === "ml" ? "ml" : "en";
+    const voice = window.speechSynthesis?.getVoices().find((candidate) => {
+      const locale = candidate.lang.toLowerCase();
+      return locale === expectedLanguage || locale.startsWith(`${expectedLanguage}-`);
+    });
+    if (!voice) return false;
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
+    return true;
+  }
+
   function speakFallback(text, language) {
     if (!("speechSynthesis" in window) || !text) return false;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = language === "ml" ? "ml-IN" : "en-IN";
+    if (!setBrowserSpeechLanguage(utterance, language)) return false;
     activeUtterance = utterance;
     utterance.addEventListener("end", () => {
       if (activeUtterance === utterance) activeUtterance = null;
@@ -621,7 +633,10 @@
     }
     return new Promise((resolve) => {
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = language === "ml" ? "ml-IN" : "en-IN";
+      if (!setBrowserSpeechLanguage(utterance, language)) {
+        resolve(false);
+        return;
+      }
       activeUtterance = utterance;
       utterance.addEventListener("end", () => {
         if (activeUtterance === utterance) activeUtterance = null;
@@ -1007,18 +1022,11 @@
       notify("No event is loaded. Set up an event before starting anchoring.");
       return;
     }
-    if (eventState.status === "ended") {
-      notify("This event has ended and cannot be restarted.");
-      return;
-    }
-    const startImmediately = startPending;
-    if (startImmediately) {
-      window.clearTimeout(pendingStartTimer);
-      pendingStartTimer = null;
-      startPending = false;
-      render(eventState);
-    }
     try {
+      if (eventState.status === "ended") {
+        stopBrowserAudio();
+        openingPlayedEventId = null;
+      }
       try {
         await unlockAudio();
       } catch (error) {
@@ -1026,63 +1034,47 @@
       }
       if (eventState.status === "running") {
         await loadSavedScriptForPlayback();
-        const opening = scriptSegment("opening");
-        if (!currentItem() && opening && openingPlayedEventId !== eventId) {
-          announcementInProgress = true;
-          try {
-            if (await speakScriptSegments([opening])) openingPlayedEventId = eventId;
-          } finally {
-            announcementInProgress = false;
-          }
-        }
-        syncScheduledPlayback();
+        await beginFirstProgramIfNeeded();
         notify("Anchoring audio resumed. Scheduled program announcements are active.");
         return;
       }
-      if (startImmediately) {
-        await startEventAtScheduledTime();
-        return;
-      }
-      const timestamp = localTimestamp(eventState.event_start_time) ?? Date.now();
-      const delay = timestamp - Date.now();
-      if (delay > 0) {
-        startPending = true;
-        render(eventState);
-        notify(`Anchoring will start at ${eventState.event_start_time} laptop time.`);
-        const startWhenReady = () => {
-          const remaining = timestamp - Date.now();
-          if (remaining > 0) {
-            pendingStartTimer = window.setTimeout(
-              startWhenReady,
-              Math.min(remaining, 2_147_000_000),
-            );
-            return;
-          }
-          pendingStartTimer = null;
-          void startEventAtScheduledTime();
-        };
-        pendingStartTimer = window.setTimeout(
-          startWhenReady,
-          Math.min(delay, 2_147_000_000),
-        );
-      } else {
-        await startEventAtScheduledTime();
-      }
+      await startEventNow();
     } catch (error) {
       notify(error.message);
     }
   }
 
-  async function startEventAtScheduledTime() {
-    startPending = false;
+  async function beginFirstProgramIfNeeded(forceFirst = false) {
+    if (!eventState || (!forceFirst && currentItem())) {
+      syncScheduledPlayback();
+      return;
+    }
+    const first = eventState.items.find((item) =>
+      !["absent", "removed", "skipped", "done"].includes(item.status)) || null;
+    if (!first) {
+      notify("Anchoring is live, but there are no eligible program items.");
+      return;
+    }
+    const opening = scriptSegment("opening");
+    if (opening && openingPlayedEventId !== eventId) {
+      const played = await speakScriptSegments([opening]);
+      if (played) openingPlayedEventId = eventId;
+    }
+    await callNow(first.id);
+  }
+
+  async function startEventNow() {
     announcementInProgress = true;
     if (eventState) render(eventState);
     try {
       if (!eventState) throw new Error("No event is loaded.");
       const existingCurrent = eventState.status === "paused" ? currentItem() : null;
+      const restarting = eventState.status === "ended";
+      const firstEligible = eventState.items.find((item) =>
+        !["absent", "removed", "skipped", ...(restarting ? [] : ["done"])].includes(item.status)) || null;
       const started = await post(
         `/api/live-events/${eventId}/start`,
-        { defer_first_item: !existingCurrent },
+        { defer_first_item: !existingCurrent && !firstEligible },
       );
       render(started);
       await loadSavedScriptForPlayback();
@@ -1090,21 +1082,24 @@
         await callNow(existingCurrent.id);
         return;
       }
-      const opening = scriptSegment("opening");
-      if (opening) {
-        stopBrowserAudio();
-        const played = await speakScriptSegments([opening]);
-        if (played) openingPlayedEventId = eventId;
-        if (!played) notify("Anchoring started, but the opening audio could not be played.");
+      if (firstEligible) {
+        await beginFirstProgramIfNeeded(true);
+        notify("Anchoring started. The first program has begun; later programs follow the live schedule.");
+      } else {
+        notify("Anchoring started, but there are no eligible program items.");
       }
       syncScheduledPlayback();
-      if (!started.items.some((item) => !["absent", "removed", "skipped"].includes(item.status))) {
-        notify("The event started, but there are no eligible program items to announce.");
-      } else {
-        notify("Anchoring started. Programs will be introduced at their scheduled laptop times.");
-      }
     } catch (error) {
-      notify(error.message);
+      if (eventState?.status !== "running") {
+        notify(`Could not start anchoring: ${error.message}`);
+      } else {
+        notify(`Anchoring is live, but the first program could not be announced: ${error.message}`);
+      }
+      try {
+        await refresh();
+      } catch (refreshError) {
+        notify(`Could not refresh event status: ${refreshError.message}`);
+      }
     } finally {
       announcementInProgress = false;
       syncScheduledPlayback();

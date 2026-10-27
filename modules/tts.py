@@ -123,7 +123,21 @@ class SpeechSynthesizer:
         cleaned = clean_tts_text(text)
         if not cleaned:
             raise ValueError("Cannot synthesize empty speech.")
-        selected_voice = voice or self.voices.get(language, self.voices["en"])
+        if language not in {"en", "ml"}:
+            raise ValueError("Speech language must be 'en' or 'ml'.")
+        locale_prefix = f"{language}-"
+        configured_voice = self.voices.get(language, "")
+        if not configured_voice.casefold().startswith(locale_prefix):
+            raise ValueError(
+                f"The configured {language} speech voice must use the '{locale_prefix}' locale."
+            )
+        selected_voice = voice or configured_voice
+        if not selected_voice.casefold().startswith(locale_prefix):
+            logger.warning(
+                "Ignoring speech voice whose locale does not match the requested language",
+                extra={"language": language},
+            )
+            selected_voice = configured_voice
         output_path = self._cache_path(
             cleaned, language, selected_voice, rate, cache_version
         )
@@ -208,10 +222,34 @@ class SpeechSynthesizer:
 
         temporary = output_path.with_suffix(".wav")
         engine = pyttsx3.init()
+        english_voice = next(
+            (
+                voice for voice in engine.getProperty("voices")
+                if self._voice_matches_language(voice, "en")
+            ),
+            None,
+        )
+        if english_voice is None:
+            raise RuntimeError(
+                "No English offline speech voice is installed; install an English voice "
+                "or restore the Edge TTS connection."
+            )
+        engine.setProperty("voice", english_voice.id)
         engine.save_to_file(text, str(temporary))
         engine.runAndWait()
         self._wav_to_mp3(temporary, output_path)
         temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _voice_matches_language(voice: Any, language: str) -> bool:
+        """Check system voice locale metadata without assuming its default voice."""
+        metadata = [str(getattr(voice, "name", "")), str(getattr(voice, "id", ""))]
+        metadata.extend(
+            value.decode("utf-8", errors="ignore") if isinstance(value, bytes) else str(value)
+            for value in (getattr(voice, "languages", []) or [])
+        )
+        locale = re.compile(rf"(?<![a-z]){re.escape(language)}(?:[-_]|$)", re.IGNORECASE)
+        return any(locale.search(value) for value in metadata)
 
     @staticmethod
     def _wav_to_mp3(source: Path, target: Path) -> None:

@@ -1032,6 +1032,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 status_code=409,
                 detail="This saved script mentions someone marked absent; regenerate the script.",
             )
+        validation = application.state.pipeline.validator.validate(
+            segment["text"], event["language"]
+        )
+        if validation.reason == "wrong_language":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This saved script does not match the event language. "
+                    "Regenerate the anchoring script before playing it."
+                ),
+            )
         preferences = await asyncio.to_thread(
             application.state.pipeline.repository.get_preferences,
             event["session_id"],
@@ -1205,6 +1216,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         except (json.JSONDecodeError, ValueError) as exc:
             message = str(exc) if isinstance(exc, ValueError) else "Gemini returned invalid JSON for the script segments."
             raise HTTPException(status_code=502, detail=message) from exc
+        for segment in generated:
+            validation = application.state.pipeline.validator.validate(
+                segment["text"], language
+            )
+            if validation.reason == "wrong_language":
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Generated script segment '{segment['id']}' does not match "
+                        f"the event language '{language}'. No script changes were saved; retry."
+                    ),
+                )
         excluded = blocked_names(event)
         for segment in generated:
             segment["text"] = drop_blocked_name_sentences(segment["text"], excluded).strip()
@@ -1653,6 +1676,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             )
             return "".join(chunks).strip(), decision.backend, decision.model
 
+        audio_url: str | None = None
+        notice: str | None = None
         try:
             generated, backend, model = await asyncio.to_thread(generate_announcement)
             forbidden = [
@@ -1661,6 +1686,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 if item["status"] in {"absent", "removed", "skipped"} and item["person_name"]
             ]
             generated = drop_blocked_name_sentences(generated, forbidden)
+            language_mismatch = (
+                application.state.pipeline.validator.validate(
+                    generated, updated["language"]
+                ).reason == "wrong_language"
+            )
             previous_speaker = (
                 str(previous_item.get("person_name") or "").strip().casefold()
                 if previous_item and is_summary_event_type(
@@ -1687,12 +1717,26 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 or not generated
                 or contains_blocked_name(generated, forbidden)
                 or thanks_missing
+                or language_mismatch
             ):
                 message = fallback
+                if application.state.pipeline.validator.validate(
+                    message, updated["language"]
+                ).reason == "wrong_language":
+                    message = (
+                        "We now move to the next program."
+                        if updated["language"] == "en"
+                        else "ഇനി അടുത്ത പരിപാടിയിലേക്ക് കടക്കാം."
+                    )
                 used_fallback = True
             else:
                 message = generated
                 used_fallback = False
+            if language_mismatch:
+                notice = (
+                    "The generated announcement did not match the event language; "
+                    "a language-safe fallback was used."
+                )
         except Exception:
             logger.exception(
                 "Live event announcement generation failed; using schedule template"
@@ -1706,8 +1750,6 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             application.state.pipeline.repository.get_preferences,
             updated["session_id"],
         )
-        audio_url: str | None = None
-        notice: str | None = None
         try:
             audio = await application.state.pipeline.synthesizer.synthesize(
                 message,
@@ -1716,7 +1758,9 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 cache_version=updated["state_version"],
             )
             audio_url = f"/api/audio/{audio.name}"
-            notice = application.state.pipeline.synthesizer.get_status(audio)
+            synthesis_notice = application.state.pipeline.synthesizer.get_status(audio)
+            if synthesis_notice:
+                notice = f"{notice} {synthesis_notice}".strip() if notice else synthesis_notice
         except Exception:
             logger.exception("Announcement TTS failed; browser speech fallback will be used")
             notice = "Audio synthesis failed; using browser speech if available."
